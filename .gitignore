@@ -1,0 +1,8 @@
+build/
+build-*/
+result
+result-*
+node_modules/
+*.o
+*.so
+*.dylib
