@@ -87,6 +87,23 @@ if (usesStub) {
     // Otherwise the credential chain stalls probing 169.254.169.254.
     AWS_EC2_METADATA_DISABLED: 'true',
     AWSKMS_STUB: '1',
+    /*
+     * Which specs this stub cannot serve, so the tests skip them rather than
+     * failing. The stub signs by shelling out to the `openssl` CLI, and which
+     * CLI that is decides what it can do: ubuntu ships 3.0.13, which has no
+     * ML-DSA, while a homebrew or self-built 3.5+ does. AWSKMS_OPENSSL selects
+     * it.
+     *
+     * The stub has computed this all along -- supported() says "so tests can
+     * skip the rest" -- but nothing ever read it, so on any host with an older
+     * CLI the ML-DSA tests failed with a bare SIGN_FAILED instead of skipping.
+     * The stub runs in THIS process and the tests run in a child, so it has to
+     * cross as an env var.
+     */
+    AWSKMS_STUB_UNSUPPORTED: Object.entries(stub.supported())
+      .filter(([, ok]) => !ok)
+      .map(([spec]) => spec)
+      .join(','),
   });
   console.log(`# kms stub listening on ${endpoint}`);
   /*

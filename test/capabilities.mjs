@@ -51,14 +51,34 @@ function stubCanSignMlDsa() {
 }
 
 /*
- * True when ML-DSA can be exercised end to end here. Use it for the skip
- * REASON as well, so a skipped test says which of the two reasons applied
- * rather than just "skipped".
+ * (3) the HTTP-stub question, for the aws backend.
+ *
+ * With AWSKMS_BACKEND=aws the tests talk to test/kms-stub.mjs over HTTP, and it
+ * signs by shelling out to the `openssl` CLI -- so what that CLI supports is a
+ * THIRD, independent answer. Ubuntu ships 3.0.13, which has no ML-DSA, while
+ * homebrew or a self-built 3.5+ does; AWSKMS_OPENSSL selects which one.
+ * test/run.mjs passes the stub's own verdict down, since the stub runs in the
+ * parent process and the tests run in a child.
  */
-export const hasMlDsa = hostHasMlDsa && stubCanSignMlDsa();
+const stubUnsupported = new Set(
+  (process.env.AWSKMS_STUB_UNSUPPORTED ?? '').split(',').filter(Boolean));
 
-export const mlDsaSkipReason = hostHasMlDsa
-  ? (stubCanSignMlDsa()
-      ? false
-      : 'the stub backend was built against OpenSSL < 3.5 and cannot sign ML-DSA')
-  : 'needs OpenSSL 3.5+';
+/** Specs the HTTP stub cannot serve here. Empty unless it is in use. */
+export const unsupportedSpecs = stubUnsupported;
+
+/*
+ * True when ML-DSA can be exercised end to end here. Use the reason too, so a
+ * skipped test says WHICH of the three reasons applied rather than just
+ * "skipped" -- they are genuinely different problems and only one of them is
+ * ever worth acting on.
+ */
+export const hasMlDsa =
+  hostHasMlDsa && stubCanSignMlDsa() && !stubUnsupported.has('ML_DSA_44');
+
+export const mlDsaSkipReason = !hostHasMlDsa
+  ? 'needs OpenSSL 3.5+'
+  : !stubCanSignMlDsa()
+    ? 'the stub backend was built against OpenSSL < 3.5 and cannot sign ML-DSA'
+    : stubUnsupported.has('ML_DSA_44')
+      ? 'the HTTP stub\'s openssl CLI has no ML-DSA (set AWSKMS_OPENSSL to a 3.5+ one)'
+      : false;
