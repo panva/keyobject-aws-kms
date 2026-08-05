@@ -185,7 +185,16 @@ set(AWSKMS_CORE_SOURCES
   src/keymgmt.c
   src/signature.c)
 
-set(AWSKMS_SOURCES ${AWSKMS_CORE_SOURCES})
+# The N-API entry point, so ONE artifact is both the OpenSSL provider and its own
+# addon -- `import 'pkg/register'` then needs no second binary and no CLI flag.
+# It costs 448 bytes and references exactly one napi symbol, WEAKLY, so the module
+# still loads in hosts with no napi at all, such as the `openssl` CLI.
+#
+# In AWSKMS_SOURCES rather than AWSKMS_CORE_SOURCES on purpose: CORE is shared
+# with awskms_unit, which is an ordinary EXECUTABLE and so is linked without
+# -undefined dynamic_lookup. A weak-import symbol that no dylib provides is a
+# hard link error there, not a zero -- so adding it to CORE breaks the unit build.
+set(AWSKMS_SOURCES ${AWSKMS_CORE_SOURCES} src/napi.c)
 if(AWSKMS_BACKEND STREQUAL "stub")
   list(APPEND AWSKMS_SOURCES src/kms_stub.c)
 elseif(AWSKMS_BACKEND STREQUAL "aws")

@@ -27,18 +27,49 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=1; }
 echo "module: $MODULE"
 [[ -f $MODULE ]] || { bad "not built"; exit 1; }
 
-# --- 1. exactly one exported symbol ----------------------------------------
+# --- 1. exactly these two exported symbols ---------------------------------
+#
+# EXACTLY, not at-most: an export list that quietly grows is how a module starts
+# interposing on its host. Two, because one artifact is both the OpenSSL provider
+# and its own N-API addon.
 echo
 echo "exported symbols"
 if [[ $(uname -s) == Darwin ]]; then
-  exported=$(nm -gU "$MODULE" 2>/dev/null | awk '$2=="T"{print $3}' | sed 's/^_//')
+  exported=$(nm -gU "$MODULE" 2>/dev/null | awk '$2=="T"{print $3}' | sed 's/^_//' | sort)
 else
-  exported=$(nm -D --defined-only "$MODULE" 2>/dev/null | awk '$2=="T"{print $3}')
+  exported=$(nm -D --defined-only "$MODULE" 2>/dev/null | awk '$2=="T"{print $3}' | sort)
 fi
-if [[ $exported == "OSSL_provider_init" ]]; then
-  pass "only OSSL_provider_init is exported"
+expected=$(printf 'OSSL_provider_init\nnapi_register_module_v1\n' | sort)
+if [[ $exported == "$expected" ]]; then
+  pass "exports exactly OSSL_provider_init and napi_register_module_v1"
 else
-  bad "expected only OSSL_provider_init, got: $(echo "$exported" | tr '\n' ' ')"
+  bad "unexpected export set: $(echo "$exported" | tr '\n' ' ')"
+fi
+
+# --- 1b. every napi reference must be WEAK ---------------------------------
+#
+# This is the more valuable of the two assertions, and the only automated thing
+# standing between a future contributor adding a plain napi_* call and the
+# provider silently ceasing to load everywhere that is not node.
+#
+# A STRONG napi reference is fatal in any host without node's symbols -- the
+# `openssl` CLI, or any other application loading the provider -- because
+# OpenSSL's DSO layer uses RTLD_NOW and resolves everything eagerly. A weak one
+# resolves to 0 there and the code tests for it. Measured as a negative control:
+# with a strong reference the CLI fails with "symbol not found in flat
+# namespace"; the module simply stops being a provider outside node.
+echo
+echo "napi references"
+if [[ $(uname -s) == Darwin ]]; then
+  strong=$(nm -m -u "$MODULE" 2>/dev/null | grep '_napi_' | grep -v 'weak external' || true)
+else
+  strong=$(nm -D --undefined-only "$MODULE" 2>/dev/null | awk '$1=="U" && $2 ~ /^napi_/' || true)
+fi
+if [[ -z $strong ]]; then
+  pass "all napi references are weak (module still loads in non-node hosts)"
+else
+  bad "STRONG napi reference(s) -- the module will not load outside node:"
+  sed 's/^/       /' <<<"$strong"
 fi
 
 # --- 2. no second OpenSSL (or TLS stack) dragged in ------------------------

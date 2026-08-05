@@ -34,14 +34,91 @@ block the work items that name them
         and no README install section can be written, until these are real.
         Blocks: T4, T5, and the install half of T1.
 
-[ ] Q2. Does v1 ship in-process registration at all?
-        A single .so can be both the provider and its own N-API addon (measured;
-        costs 448 bytes), so `import 'pkg/register'` needs no second artifact and
-        no CLI flag. But under --permission it additionally needs --allow-addons,
-        which is arbitrary native code, where the config-file route needs only
-        --allow-openssl-store, a scoped capability. Shipping only the cnf route
-        in v1 and adding register() later is defensible.
-        Blocks: the shape of T5, and whether src/napi.c lands at all.
+[x] Q2. DECIDED 2026-08-05: v1 SHIPS register(). src/napi.c is landed, the
+        `./register` subpath is exported, and 15 npm checks run on every CI leg.
+
+        The cnf route remains the DEFAULT in the docs, and the one to recommend
+        to anyone running under --permission -- see the grant comparison below.
+        register() is the ergonomic path: `import 'pkg/register'`, no flag, no
+        cnf, and a failed registration throws instead of failing silently.
+
+        The evidence behind the decision, kept because it is what makes the
+        --permission guidance credible rather than assertion:
+
+        MEASURED, macOS arm64 and linux (both backends):
+          one artifact exports exactly OSSL_provider_init and
+            napi_register_module_v1 -- no second binary, no second release matrix
+          cost: 448 bytes (210384 -> 210832)
+          the ONE napi reference is WEAK on both platforms ("weak external" on
+            Darwin, `w` on ELF), so the module still loads in hosts with no napi
+            at all -- the openssl CLI reports it active, and that CLI uses
+            RTLD_NOW, which was the specific thing recorded as INFERRED
+          as an addon: process.dlopen registers the provider in-process with NO
+            cnf and NO CLI flag, createPrivateKey reaches our loader, and
+            crypto.generateKeyPair still works, so the ?provider!=awskms guard
+            holds when set this way
+          aws backend on linux -- hidden visibility, static archives,
+            --exclude-libs,ALL, the version script -- builds and behaves
+            identically, with 0 libcrypto in NEEDED
+
+        THE COST, WHICH IS THE WHOLE DECISION. Minimum grants under --permission:
+          cnf route                   --allow-openssl-store
+          addon, direct module path   --allow-addons --allow-openssl-store
+          addon via npm (REAL path)   --allow-addons --allow-openssl-store
+                                      --allow-fs-read
+        The npm route needs the third because import() resolves through
+        node_modules. I briefly "corrected" the plan to two grants; that was
+        measured with a direct path and is not the route a user takes.
+
+        It is QUALITATIVE, not just 1-vs-3: --allow-openssl-store is a scoped
+        capability, --allow-addons is arbitrary native code. Buying one dlopen
+        with the whole permission model is a bad trade for anyone who cares about
+        --permission, and those people are precisely this provider's audience.
+
+        WHAT IT BUYS: `import 'pkg/register'` with no flag at all, and traps
+        (a) (b) (c) eliminated rather than documented -- a failed registration
+        THROWS out of require() instead of failing silently at first use.
+
+        node:ffi IS NOT A REPLACEMENT -- settled by measurement 2026-08-05,
+        against STOCK 26.7.0 rather than the dev build. It was a live candidate
+        when the addon was believed to cost a SECOND native binary per platform.
+        That binary does not exist, so ffi's one advantage is gone and nothing
+        replaces it:
+
+                          cnf route      napi addon        node:ffi
+          extra artifact  none           none (448 B)      none
+          CLI flag        --openssl-     NONE              --experimental-ffi
+                          config
+          --permission    1: openssl-    3: fs-read,       3: fs-read, ffi,
+                          store            addons,           openssl-store
+                                           openssl-store
+          stability       stable         stable (N-API)    EXPERIMENTAL (1)
+
+        Measured: node:ffi is compiled into stock 26.7.0 and the ffi route does
+        register the provider there (ERR_OSSL_AWSKMS_INVALID_URI, i.e. our loader
+        answered). --experimental-ffi is still required, though it is on the
+        NODE_OPTIONS allowlist. Minimum grants are identical to the addon's --
+        three either way, differing only in --allow-ffi vs --allow-addons.
+
+        THE DECISIVE POINT IS THE FLAG. The whole reason to register in-process is
+        `import 'pkg/register'` with nothing on the command line. --experimental-
+        ffi gives that up, and once a flag is being passed anyway --openssl-config
+        is strictly better: one scoped grant instead of three, and nothing
+        experimental in a signing path. So ffi is dominated on every axis it was
+        supposed to win.
+
+        ASSERTED, not merely present: check-load.sh requires exports to be
+        EXACTLY {OSSL_provider_init, napi_register_module_v1} and every napi
+        reference to be WEAK -- the latter being the only automated thing stopping
+        a future contributor from adding a plain napi_* call and silently ending
+        the provider's life in every host that is not node.
+
+        WHAT THE DOCS MUST SAY, since shipping both routes means users choose:
+        register() needs --allow-addons + --allow-openssl-store + --allow-fs-read;
+        the cnf route needs --allow-openssl-store alone. That is qualitative, not
+        3-vs-1: --allow-openssl-store is a scoped capability, --allow-addons is
+        arbitrary native code. Under --permission, prefer opensslConfigPath().
+        The register() docstring in npm/core/index.js already says so.
 
 [ ] Q3. musl (and win32) in or out for v1.
         Currently out. Four release artifacts if out, six if musl is in. musl is
@@ -460,7 +537,7 @@ WORK
         Note npm Trusted Publishing cannot do a package's FIRST publish -- the
         package must already exist on the registry -- so each name needs one
         token-authenticated publish by hand before OIDC takes over.
-        Blocked on Q1 and Q2.
+        Blocked on Q1 only -- Q2 is decided (register() ships).
 
 
 LATER MILESTONES (explicitly out of scope for now)

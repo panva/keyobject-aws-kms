@@ -265,6 +265,24 @@ jobs:
           path: awskms-${{ steps.stage.outputs.target }}.tar.gz
           if-no-files-found: error
 
+      # The npm packages, built and USED -- packed, installed from the tarballs
+      # into a throwaway project, then driven through modulePath(),
+      # opensslConfigPath(), register(), the bin and the doctor. No registry is
+      # involved: `npm pack` produces exactly what a publish would upload, and
+      # installing from that tarball exercises the whole resolution path --
+      # optional dependencies, os/cpu gating, exports subpaths, require.resolve --
+      # which is the part that actually breaks. Publishing adds nothing to the
+      # test and cannot be undone.
+      #
+      # Runs on EVERY leg, not just the aws ones. What is under test here is the
+      # package plumbing, which is backend-independent -- only the artifact inside
+      # differs -- and the stub build produces both inputs it needs (the module
+      # and the relocatable cnf, which is generated unconditionally). Restricting
+      # it to aws would mean register() and the resolution logic were only ever
+      # checked on the schedule, never on the pull request that changed them.
+      - name: npm packages
+        run: scripts/npm-pack.sh build
+
   openssl-headers:
     name: openssl ${{ matrix.version }} headers
     runs-on: ubuntu-latest

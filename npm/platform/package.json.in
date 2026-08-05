@@ -1,0 +1,22 @@
+{
+  "name": "@awskms-openssl-provider/@TARGET@",
+  "version": "@VERSION@",
+  "description": "Prebuilt awskms OpenSSL provider for @TARGET@",
+  "license": "MIT",
+  "os": ["@OS@"],
+  "cpu": ["@CPU@"],
+  "files": [
+    "@MODULE@",
+    "awskms.cnf",
+    "LICENSE"
+  ],
+  "exports": {
+    "./@MODULE@": "./@MODULE@",
+    "./awskms.cnf": "./awskms.cnf",
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panva/tmp-tiny-aws-kms-openssl-provider.git"
+  }
+}

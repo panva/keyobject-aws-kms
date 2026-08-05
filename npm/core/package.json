@@ -1,0 +1,38 @@
+{
+  "name": "awskms-openssl-provider",
+  "version": "0.0.0",
+  "description": "Use AWS KMS asymmetric signing keys from Node.js crypto, via an OpenSSL provider",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./register": "./register.js",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "awskms-openssl-provider": "./bin/awskms.js"
+  },
+  "files": [
+    "index.js",
+    "register.js",
+    "bin/",
+    "awskms-doctor.mjs",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=26.7.0"
+  },
+  "optionalDependencies": {
+    "@awskms-openssl-provider/darwin-arm64": "0.0.0",
+    "@awskms-openssl-provider/darwin-x64": "0.0.0",
+    "@awskms-openssl-provider/linux-arm64": "0.0.0",
+    "@awskms-openssl-provider/linux-x64": "0.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panva/tmp-tiny-aws-kms-openssl-provider.git"
+  },
+  "sideEffects": [
+    "./register.js"
+  ]
+}
