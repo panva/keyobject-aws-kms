@@ -167,8 +167,17 @@ jobs:
       - name: build
         run: cmake --build build --parallel
 
+      # -R '^unit$' because the aws backend brings the AWS SDK in via
+      # add_subdirectory, and the subproject registers its own ~230 add_test()
+      # entries -- whose executables are never built, since it is added
+      # EXCLUDE_FROM_ALL. Unfiltered, ctest reports 231 tests, passes ours, then
+      # fails on "Unable to find executable: aws-crt-cpp-tests". The stub backend
+      # never adds the SDK, so this is invisible there.
+      #
+      # --no-tests=error so that a rename of our test does not turn this step into
+      # a silent no-op that runs nothing and reports success.
       - name: unit tests
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build -R '^unit$' --no-tests=error --output-on-failure
 
       # Both nodes: the floor for the symbol audit that catches trap (d), and the
       # matrix node so a newer release is exercised too.
