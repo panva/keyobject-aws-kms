@@ -9,9 +9,11 @@ Signing is DONE for every key spec in scope and verified against real AWS KMS.
 3.0.21 / 3.5.7 / 3.6.3 / 4.0.1, on macOS-arm64 and Linux-arm64.
 
 CI is live and green as of 2026-08-05, on real runners rather than only locally:
-ci.yml across ubuntu-latest / ubuntu-24.04-arm / macos-latest, and real-kms.yml
-against the actual service (208 passing, 0 keys left billable). Requires Node
->= 26.7.0, which published that day; the floor lives in .node-version.
+ci.yml across ubuntu-latest / ubuntu-24.04-arm / macos-latest, both backends, all
+11 jobs; real-kms.yml against the actual service (208 passing, 0 keys left
+billable); and three release artifacts built, uploaded, and verified by
+downloading one and running it. Requires Node >= 26.7.0, which published that
+day; the floor lives in .node-version and is read by both workflows.
 
 THIS FILE IS ONLY WHAT IS LEFT. Why things are the way they are -- decisions,
 measurements, dead ends already paid for -- is in docs/journal.md. The three-tier
@@ -261,32 +263,69 @@ WORK
         BEFORE key creation, so a module that leaks libcrypto is caught before
         money is spent rather than after.
 
-        WHAT CI CAUGHT ON ITS FIRST RUN, 2026-08-05. 20 ML-DSA failures on both
-        Linux legs, macOS green. Cause: ubuntu ships OpenSSL 3.0.13 headers while
-        node 26.7.0 bundles 3.5.7, and src/kms_stub.c compiles out its EXTERNAL_MU
-        path below 3.5 (EVP_PKEY_sign_message_init is a 3.5 linker symbol). So the
-        RUNTIME could do ML-DSA and the test FAKE could not.
+        FULLY GREEN ON REAL RUNNERS 2026-08-05: all 11 jobs, both backends, all
+        three platforms, plus three uploaded artifacts. Getting there took four
+        rounds, and every failure was real -- worth reading, because two were
+        mine and two were latent defects nobody had hit.
 
-        The tests already had ML-DSA skip machinery -- it was just asking the
-        wrong question. hasMlDsa was duplicated in four files and each probed the
-        HOST via generateKeyPairSync('ml-dsa-44'), which is true on any node with
-        3.5+. The question that matters for the stub is a BUILD-time one.
+        ML-DSA TURNED OUT TO BE **THREE** INDEPENDENT CAPABILITY QUESTIONS, which
+        is why it kept resurfacing wearing a different hat. All three now have
+        distinct skip reasons in test/capabilities.mjs, so a skipped test says
+        which applies and what to do:
+          1. can the HOST NODE's OpenSSL do ML-DSA?   a RUNTIME question, probed
+             with generateKeyPairSync('ml-dsa-44')
+          2. was the STUB BACKEND COMPILED with it?   a BUILD-HEADERS question.
+             src/kms_stub.c needs EVP_PKEY_sign_message_init, a 3.5 linker
+             symbol, and compiles the EXTERNAL_MU path out below that. CMake now
+             reads the version from the HEADERS -- which also fixed the
+             explicit-include-dir path, where the version was literally the
+             string "unknown (explicit include dir)" and compared wrong -- writes
+             an awskms-stub-mldsa marker, and warns at configure time.
+          3. can the HTTP STUB's `openssl` CLI do it?  a PATH question, aws
+             backend only. The stub signs by shelling out, ubuntu's CLI is
+             3.0.13, and AWSKMS_OPENSSL selects which one.
+        (1) and (2) disagree exactly when the headers are older than the runtime,
+        which is EVERY distro on OpenSSL 3.0 under a node bundling 3.5 --
+        ubuntu 24.04, RHEL 9, debian 12. Asking only (1) there says "available"
+        and then 20 signatures fail against a fake that cannot produce one.
 
-        Fixed: CMake reads the version out of the HEADERS (works on both the
-        find_package and the explicit-include-dir paths, the latter previously
-        having no version at all), writes an awskms-stub-mldsa marker beside the
-        module, and WARNS at configure time. test/capabilities.mjs is now the one
-        place that answers it, and the skip reason names which of the two reasons
-        applied. Verified both ways: 3.0.21 headers -> 289 pass 0 fail (was 20
-        failures); 3.6.3 headers -> 374 pass 6 skipped, the recorded baseline.
+        (3) WAS DEAD CODE. test/kms-stub.mjs has had a supported() method all
+        along, commented "so tests can skip the rest", and NOTHING EVER CALLED
+        IT. run.mjs now passes its verdict to the children via
+        AWSKMS_STUB_UNSUPPORTED -- it has to cross a process boundary, since the
+        stub runs in the parent. macOS never noticed because ci.yml points
+        AWSKMS_OPENSSL at homebrew's 3.6.3.
 
-        THE PRODUCT WAS NEVER AFFECTED. Only the test fake signs locally; the real
-        backend has KMS sign and computes mu with SHAKE256, which is 3.0-era.
+        TWO FAILURES I INTRODUCED, both the same mistake -- testing one arm of a
+        conditional and assuming the other:
+          "${extra[@]}" on an EMPTY array in ci.yml's configure step. macOS
+            runners run /bin/bash 3.2, where that is an "unbound variable" error;
+            linux has bash 5 and does not care, so it failed on exactly one leg.
+            This is the SAME bug fixed in check-load.sh hours earlier. I had
+            tested the aws path, where the array is populated. Fixed with
+            ${extra[@]+"${extra[@]}"} and verified under the real bash 3.2,
+            including that a space-containing value survives as one argument.
+          ctest ran the AWS SDK's tests. The aws backend adds the SDK via
+            add_subdirectory, and the subproject registers ~230 add_test()
+            entries whose executables are never built (EXCLUDE_FROM_ALL), so
+            unfiltered ctest finds 231 tests, passes ours, then dies on "Unable
+            to find executable: aws-crt-cpp-tests". Invisible on the stub
+            backend, which never adds the SDK -- and locally I had only ever run
+            ctest on stub builds, invoking ./build/awskms_unit directly on the
+            aws one. Now -R '^unit$' with --no-tests=error, so a rename fails
+            loudly rather than silently running nothing.
 
-        CONSEQUENCE TO KNOW: with ubuntu's 3.0 headers, ML-DSA is now SKIPPED on
-        both Linux legs, so it is exercised end to end only on macOS. If that
-        matters, the cheap upgrade is to point the Linux build at the 3.5.7 tree
-        the openssl-headers job already builds and caches.
+        THE PRODUCT WAS NEVER AFFECTED BY ANY OF IT. Only the test fake signs
+        locally; the real backend has KMS sign and computes mu with SHAKE256,
+        which is 3.0-era. Confirmed from the other direction by the real-KMS run:
+        the same runner, same distro, same 3.0 headers that make the stub skip
+        ML-DSA signed ML-DSA fine against real AWS.
+
+        CONSEQUENCE TO KNOW: on ubuntu, ML-DSA is SKIPPED on the Linux legs for
+        reasons (2) and (3), so it is exercised end to end only on macOS and
+        against real KMS. If that is too thin, point the Linux legs at the 3.5.7
+        tree the openssl-headers job already builds and caches, and set
+        AWSKMS_OPENSSL to its CLI.
 
         THE DIVISION OF LABOUR, decided after the two workflows briefly had
         IDENTICAL trigger sets and became impossible to tell apart:
@@ -324,7 +363,24 @@ WORK
         relocatable cnf, the doctor, LICENSE and install notes; plus SHA256SUMS
         and build-provenance attestation.
 
-        BUILDING IS DONE 2026-08-05; only PUBLISHING is left.
+        BUILDING IS DONE AND PROVEN 2026-08-05; only PUBLISHING is left.
+
+        Three artifacts built by CI, and INDEPENDENTLY VERIFIED by downloading
+        one and running it here rather than trusting the job that made it:
+          awskms-darwin-arm64   870 KB
+          awskms-linux-x64     1.43 MB
+          awskms-linux-arm64    1.40 MB
+        The Linux ones are larger by about the 0.7 MB that -static-libstdc++
+        -static-libgcc was predicted to cost.
+
+        On the downloaded darwin-arm64 tarball, checked against the SHIPPED bytes
+        rather than a build tree: minos 13.5 recorded, so the support floor is
+        deliberate rather than an accident of the runner image; otool -L shows
+        libSystem / Security / Network / CoreFoundation / libz / libc++ and NO
+        libcrypto, the invariant that was broken on Linux that same morning; the
+        cnf is the relocatable one; the doctor reports "awskms is working" from a
+        path nobody anticipated; and sign.test.mjs is 171/171 against it. That
+        last part is the whole claim a relocatable archive makes.
 
         ci.yml's aws legs (cron and workflow_dispatch) now configure with the
         release flags, stage a tarball, UNPACK IT SOMEWHERE ELSE AND RUN THE
