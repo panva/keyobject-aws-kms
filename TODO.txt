@@ -139,13 +139,43 @@ block the work items that name them
         the npm package uses to look the satellite up, so the artifact name and
         the lookup cannot drift and there is no table to forget.
 
-        STILL OPEN HERE: musl and win32. Currently out. Four release artifacts if
-        out, six if musl is in. musl is
-        a genuinely different artifact -- different libc ABI, no symbol
-        versioning, so none of the glibc analysis carries over -- and has no
-        GitHub-hosted runner. win32 needs different N-API code entirely.
-        This is a support commitment, not a technical question.
+        STILL OPEN HERE: musl. A genuinely different artifact -- different libc
+        ABI, no symbol versioning, so none of the glibc analysis carries over --
+        and no GitHub-hosted runner. Four release artifacts if out, five if in.
+        A support commitment, not a technical question.
         Blocks: the matrix in T4.
+
+        WIN32 IS NOT A SUPPORT DECISION, IT IS BLOCKED. Read node's build config
+        rather than measured -- there is no Windows machine here -- but the
+        mechanism is unambiguous:
+
+        The whole design is "compile against headers, link nothing, bind to the
+        host at dlopen". On POSIX that works because of ONE line, common.gypi:581
+        'ldflags': ['-rdynamic'], which exports every symbol from node -- measured
+        earlier as the complete libcrypto ABI, 8880/8880.
+
+        PE/COFF has no flat namespace and no dynamic_lookup: a DLL's imports bind
+        to a NAMED DLL in its import table. Stock node.exe links OpenSSL
+        statically and does NOT export it -- there is no .def and no
+        __declspec(dllexport) for it, and node.gyp:643's MapExports is
+        /MAPINFO:EXPORTS, a diagnostic map file, not exports. Addons link
+        node.lib, which carries the N-API surface, not libcrypto. So there is
+        nothing to import the OpenSSL ABI FROM.
+
+        Three routes, all bad:
+          upstream node exports the OpenSSL ABI on Windows -- not a change in
+            this repo, and it means enumerating thousands of symbols in a .def
+          resolve every OpenSSL call via GetProcAddress at runtime -- routing
+            every call through a function-pointer table, a redesign rather than
+            a port
+          link a separate libcrypto.dll -- the exact second-OpenSSL catastrophe
+            the design exists to prevent
+        Secondary: weak_import/weak have no MSVC equivalent, so the weak
+        napi_throw_error reference does not port either. Minor by comparison.
+
+        PRECISE CLAIM: not possible for STOCK node.exe. A Windows node built
+        --shared-openssl would work, since there would be a real libcrypto.dll to
+        import from -- but that is not what anyone downloads.
 
 [ ] Q4. Linux glibc floor.
         Recommendation is 2.34, by building in almalinux:9, which covers RHEL 9,
