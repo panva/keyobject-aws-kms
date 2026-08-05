@@ -1,0 +1,293 @@
+tiny-aws-kms-openssl-provider -- what is left
+=============================================
+
+Scope: an OpenSSL provider for using AWS KMS asymmetric keys from Node.js.
+Not a general-purpose KMS provider; the supported surface is what Node reaches.
+
+Signing is DONE for every key spec in scope and verified against real AWS KMS.
+398 aws-backend tests, 374 offline, 219 C unit checks, clean against OpenSSL
+3.0.21 / 3.5.7 / 3.6.3 / 4.0.1, on macOS-arm64 and Linux-arm64.
+
+THIS FILE IS ONLY WHAT IS LEFT. Why things are the way they are -- decisions,
+measurements, dead ends already paid for -- is in docs/journal.md. The three-tier
+distribution plan is in docs/distribution.md. Each item below stands on its own;
+nothing here requires reading anything else first.
+
+Requires Node >= 26.7.0, where the OSSL_STORE loader shipped.
+
+
+DECISIONS NEEDED -- these are judgement calls, not measurements, and they
+block the work items that name them
+-------------------------------------------------------------------------
+
+[ ] Q1. npm scope and package names.
+        The plan assumes a core package plus one per architecture, following
+        esbuild. Placeholders in use: `awskms-openssl-provider` and
+        `@awskms-openssl-provider/<platform>-<arch>`. Nothing can be published,
+        and no README install section can be written, until these are real.
+        Blocks: T4, T5, and the install half of T1.
+
+[ ] Q2. Does v1 ship in-process registration at all?
+        A single .so can be both the provider and its own N-API addon (measured;
+        costs 448 bytes), so `import 'pkg/register'` needs no second artifact and
+        no CLI flag. But under --permission it additionally needs --allow-addons,
+        which is arbitrary native code, where the config-file route needs only
+        --allow-openssl-store, a scoped capability. Shipping only the cnf route
+        in v1 and adding register() later is defensible.
+        Blocks: the shape of T5, and whether src/napi.c lands at all.
+
+[ ] Q3. musl (and win32) in or out for v1.
+        Currently out. Four release artifacts if out, six if musl is in. musl is
+        a genuinely different artifact -- different libc ABI, no symbol
+        versioning, so none of the glibc analysis carries over -- and has no
+        GitHub-hosted runner. win32 needs different N-API code entirely.
+        This is a support commitment, not a technical question.
+        Blocks: the matrix in T4.
+
+[ ] Q4. Linux glibc floor.
+        Recommendation is 2.34, by building in almalinux:9, which covers RHEL 9,
+        Amazon Linux 2023 including Lambda, Ubuntu 22.04+ and Debian 12+. Going
+        lower buys only distributions that are EOL or nearly so, at the cost of
+        an OpenSSL-3.0-headers problem. Confirm or override.
+        Blocks: T4.
+
+[ ] Q5. What --openssl-config clobbering means for users.
+        Setting OPENSSL_CONF or --openssl-config REPLACES the host's OpenSSL
+        configuration wholesale for that process. Anyone who already has one --
+        FIPS policy, a corporate CA, a pkcs11 provider section -- silently loses
+        it. Either the shipped cnf carries an `.include` of the system config, or
+        the docs tell people to merge by hand. Not yet measured either way.
+        Blocks: the install instructions in T1 and the archive contents in T4.
+
+
+[x] Q6. Real-AWS testing on a PR -- DONE 2026-08-05. Route chosen: add the
+        pull_request subject to the existing admin role, rather than a GitHub
+        Environment plus a separate sign-only role.
+
+        Applied and verified against the account: AwskmsTestAdmin's trust policy
+        now carries both subjects, for repo panva/tmp-tiny-aws-kms-openssl-provider,
+        and the `real-kms` label exists.
+
+        THE SUBJECT IS BOUND TO THE REPOSITORY NAME. Renaming or moving the repo
+        breaks CI's ability to assume the role, and the failure gives no hint that
+        a rename caused it -- the workflow simply cannot assume. Given the current
+        name is a tmp- prefixed one, expect to re-run the bootstrap with the new
+        --github-repo when it moves.
+
+        NOT YET EXERCISED. Both workflows pin node 26.7.0, which is unpublished,
+        so a labelled PR fails at setup-node before reaching AWS. The first green
+        run will also be the first real test of this gate.
+
+        Already written:
+          scripts/real-kms-bootstrap.mjs   emits both subjects
+          .github/workflows/real-kms.yml   pull_request trigger, same-repo check,
+                                           and the `real-kms` label gate
+          docs/real-kms-setup.md           the policy, the risk, the commands
+
+        STILL TO DO, both only the account/repo owner can:
+          1. apply the trust policy by re-running the bootstrap. It is idempotent
+             -- an existing role is updated in place, not recreated -- and creates
+             no keys, so it costs nothing:
+               node scripts/real-kms-bootstrap.mjs --profile <admin> \
+                 --github-repo ORG/tiny-aws-kms-openssl-provider [--dry-run]
+             --github-repo IS NOT OPTIONAL. The OIDC statement is only emitted
+             when it is set, and update-assume-role-policy REPLACES the document
+             rather than merging, so omitting it silently strips GitHub's access
+             and CI stops being able to assume the role.
+             Read the result back with `aws iam get-role` rather than assuming.
+          2. create the label, or the gate can never be satisfied:
+               gh label create real-kms \
+                 --description "run the real-KMS suite on this PR (spends money)" \
+                 --color B60205
+
+        WHAT THIS BUYS AND WHAT IT COSTS. A pull_request subject carries no branch
+        and no label, so AWS cannot distinguish an intended PR run from any PR job
+        in the repository -- the whole event type is allowed or none of it. The
+        label gate lives ONLY in the workflow file. A job running PR-authored code
+        can mint its own OIDC token (id-token:write is sufficient) and assume a
+        role that creates and deletes KMS keys. Assuming the role and then
+        clearing the AWS_* vars before running that code is NOT a mitigation.
+        Fork PRs remain excluded independently of all this, because a fork gets no
+        OIDC token at all on a pull_request event.
+
+        If that trade is ever revisited, the structural fix is an Environment:
+        it rewrites the subject to repo:ORG/REPO:environment:NAME, letting a
+        separate sign-only role bind to exactly that subject while the admin role
+        stays unreachable from any job running PR code.
+
+        Unchanged and still worth a look someday: the StringLike has a wildcard in
+        the MIDDLE of the subject, so an environment named "x:ref:refs/heads/main"
+        would produce a matching subject. Left alone deliberately -- the wildcard
+        absorbs an immutable-subject suffix whose exact shape is documented as
+        unverified against a live token, and breaking a working deployment on an
+        unverified assumption is the worse trade.
+
+
+WORK
+----
+
+[ ] T1. README accuracy.
+        The README is currently developer-facing and does not describe how to
+        install or verify an installation.
+
+        Add:
+          - the four ways a provider install fails SILENTLY. They are commented
+            in cmake/awskms.cnf.in but appear nowhere a user will look:
+              (a) a failed provider load produces no output at all -- node starts
+                  fine and fails at the first createPrivateKey
+              (b) omitting `default = default_sect` aborts node at startup with
+                  an ncrypto::CSPRNG assertion
+              (c) `module =` needs an absolute path WITH the platform extension;
+                  no extension is appended once a search dir is involved
+              (d) two node builds reporting the same OpenSSL version can export
+                  different symbol sets, and a missing one is an all-or-nothing
+                  dlopen failure that node hides
+          - scripts/awskms-doctor.mjs as the first thing to run when something is
+            wrong. It costs no network call, no credentials and nothing billable,
+            so it is safe to recommend unconditionally.
+          - the permission-model posture, which is better than the README
+            currently implies and needs no code change: load every key, then
+            process.permission.drop('openssl.store') and drop('worker'). After
+            that a compromise cannot load new KMS keys, while already-loaded keys
+            keep signing. Two silent traps to name: the scope is "openssl.store"
+            with a DOT while the CLI flag is --allow-openssl-store, and dropping
+            an unknown scope is a no-op that has() then reports as success; and
+            drops are per-thread, so a new Worker starts from the original CLI
+            grants unless 'worker' is dropped too.
+
+        Do not write the install section until Q1 and Q5 are settled.
+
+        Not worth doing: nix/default.nix. check-openssl-matrix.sh discovers
+        homebrew openssl@N kegs directly and only falls back to nix, so it no
+        longer needs a node worktree to exist.
+
+[x] T2. Ordinary CI -- DONE 2026-08-05. .github/workflows/ci.yml, plus
+        .clang-format and third_party/.clang-format.
+
+        Four jobs. build runs 3 platforms (ubuntu-latest, ubuntu-24.04-arm,
+        macos-latest -- all free on public repos) x the node matrix from
+        panva/.github node-versions.yml with min:26, stub backend on PRs and
+        main, both backends on the cron and on workflow_dispatch.
+        openssl-headers builds 3.0.21 / 3.5.7 / 4.0.1 from source, cached, and
+        runs check-openssl-matrix.sh against each. lint runs clang-format and
+        shellcheck.
+
+        THINGS THAT ONLY SHOWED UP BY RUNNING THEM, not by writing YAML:
+          `no-docs` is REJECTED by OpenSSL 3.0.21 -- "Unsupported options:
+            no-docs", it arrived later. Docs are skipped with `make build_sw`
+            instead, which exists in all three versions, so one recipe covers
+            the matrix with no version-conditional flags.
+          A source TARBALL is not a usable header tree: ~20 headers are
+            generated from .h.in. The AWSKMS_OPENSSL_INCLUDE_DIR validation
+            checks core_dispatch.h, which is NOT generated, so a tarball passes
+            the check and then fails on the first generated include.
+            `make install_sw` gives a complete tree plus a CLI.
+          clang-format output differs between MAJORS. ubuntu ships 18;
+            .clang-format was calibrated against 22.1.8. An unpinned binary
+            fails on correctly formatted code. Pinned via pypi (verified to
+            produce byte-identical output to the local 22.1.8), installed into a
+            venv rather than pipx, because ubuntu blocks pip outside a venv and
+            a venv depends on nothing the runner image happens to preinstall.
+          macos-latest needs -DOPENSSL_ROOT_DIR: homebrew's openssl@3 is
+            keg-only and FindOpenSSL does not search /opt/homebrew/opt. And
+            /usr/bin/openssl is LibreSSL, which has no `list -providers`, so a
+            real openssl must precede it on PATH or check-load.sh fails.
+
+        THE GUARD THAT MATTERS: test/run.mjs exits 0 with an explanation when
+        the node lacks the STORE loader. Right for a developer, WRONG for CI --
+        the node comes from a resolving matrix, so a green no-op could appear at
+        any time without anyone touching the workflow. ci.yml greps for the skip
+        banner and fails. Tested both directions: exit 1 on node v24, exit 0
+        with 374 passing on a 26.7-class build.
+
+        NOTE CI IS RED UNTIL NODE 26.7.0 IS PUBLISHED. At the time of writing the
+        release proposal (nodejs/node#65027) was still open: nodejs.org/dist has
+        no v26.7.0 and the setup-node manifest tops out at 26.6.0. That is
+        correct rather than broken -- no released node runs this provider before
+        then -- but it is the expected initial state.
+
+        .clang-format: ~267 lines reformatted across src/ and test/unit_*, with
+        most files already byte-identical. ReflowComments:false is load-bearing;
+        the Google default triples the diff by rewrapping the explanatory
+        comments. third_party/.clang-format sets DisableFormat, without which any
+        format-on-save editor reformats the vendored ada amalgamation and breaks
+        update-vendored.sh verify -- verified that clang-format is now a no-op
+        there.
+
+        ALSO FIXED: real-kms.yml had never worked. It configured without
+        -DAWSKMS_BACKEND (so, stub) and then ran AWSKMS_TEST_REAL=1, which
+        run.mjs refuses with exit 2; the real-KMS pass had always been run
+        locally. Fixing that alone would have made it WORSE -- removing the
+        exit-2 refusal hands the baton straight to the capability probe above,
+        turning a loud failure into a silent, billable no-op -- so it also pins
+        the floor node. Added libssl-dev (mandatory since
+        S2N_ENFORCE_PROPER_LIBCRYPTO_FEATURE_PROBE=ON) and a check-load.sh gate
+        BEFORE key creation, so a module that leaks libcrypto is caught before
+        money is spent rather than after.
+
+        STILL OPEN, needs an AWS-side change -- see Q6.
+
+[ ] T4. Tier-2 release artifacts.
+        Per-architecture tarballs on a `v*` tag, each containing the module, a
+        relocatable cnf, the doctor, LICENSE and install notes; plus SHA256SUMS
+        and build-provenance attestation.
+
+        Two pieces do not exist yet:
+          - the relocatable cnf. cmake/awskms.cnf.in bakes an absolute module
+            path at configure time, which cannot work for an archive the user
+            unpacks anywhere. Generate a second copy using
+            `module = $ENV::AWSKMS_MODULE`: OpenSSL expands $ENV:: inside
+            `module =`, and an UNSET variable is a loud fatal (node exits 104) --
+            the only misconfiguration in this area that is not silent. A
+            wrong-but-set path is still silent; the doctor narrows that.
+          - docs/INSTALL.md, referenced by the archive.
+        Blocked on Q1, Q3, Q4, Q5.
+
+[ ] T5. Tier-3 npm package.
+        Core package plus one optional dependency per architecture, so a user
+        installs exactly one ~2.1 MB binary. Publishes to `latest`, not `next`:
+        26.7.0 is released, so the audience exists today.
+
+        Note npm Trusted Publishing cannot do a package's FIRST publish -- the
+        package must already exist on the registry -- so each name needs one
+        token-authenticated publish by hand before OIDC takes over.
+        Blocked on Q1 and Q2.
+
+[ ] F1. Report the OpenSSL 4.0.1 ML-DSA-MU crash upstream.
+        Self-contained and ready to file; nothing here depends on it.
+
+        EVP_MD "ML-DSA-MU" segfaults whenever the total message length is zero,
+        both with no EVP_DigestUpdate at all and with an explicit zero-length
+        one. The boundary is exact: len 0 -> SIGSEGV, len 1 and 2 -> rc=1. Not
+        generic to XOFs -- plain SHAKE256 finalises a zero-length message fine.
+        Confirmed on two independent 4.0.1 builds (nix and homebrew), so it is
+        upstream rather than a packaging artifact. Signing an empty message is
+        legitimate under FIPS 204, so this is a crash on valid input. The repro
+        is about 20 lines: fetch ML-DSA-MU, set the mandatory "pub" octet-string
+        param on EVP_DigestInit_ex2, finalise with EVP_DigestFinalXOF.
+
+        Does not affect this provider: the production path computes mu with
+        SHAKE256 directly and handles an empty message correctly. Only the
+        unit-test oracle comparison skips that one case.
+
+
+LATER MILESTONES (explicitly out of scope for now)
+--------------------------------------------------
+
+[ ] M1. kms:Decrypt -- OSSL_OP_ASYM_CIPHER, RSAES_OAEP_SHA_1 / _SHA_256.
+        The seam exists: add an asym_cipher table to the provider's
+        query_operation and a decrypt call behind src/kms.h. Note that Node
+        unconditionally sets the "rsa_pkcs1_implicit_rejection" ctrl for PKCS1
+        private decrypt and turns failure into a hard error.
+
+[ ] M2. kms:DeriveSharedSecret -- OSSL_OP_KEYEXCH, ECDH. Needs KEY_AGREEMENT
+        keys, a different KeyUsage from the SIGN_VERIFY keys handled today.
+
+[ ] M3. Ed25519 stays capped at 4096 bytes and cannot be lifted. PureEdDSA needs
+        the whole message and KMS caps Message at 4096. ED25519_PH_SHA_512 does
+        not help: KMS re-applies the SHA-512 prehash, so feeding it SHA-512(M)
+        signs SHA-512(SHA-512(M)), which no standard verifier computes.
+        Documented in the README; not a bug to fix.
+
+    --  SM2 is out of scope by decision (China partitions only, and OpenSSL's
+        SM2 digest signing is not equivalent to a prehashed sign).

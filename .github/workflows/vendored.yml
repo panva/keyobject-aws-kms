@@ -1,0 +1,95 @@
+# Keeps third_party/ honest.
+#
+# Dependabot cannot cover a vendored amalgamation -- see the header of
+# scripts/update-vendored.sh for why -- so the two halves it would normally
+# provide are split here: `verify` proves the tree is the release it claims to
+# be, and `drift` reports when a newer one exists.
+#
+# verify is the load-bearing one. Without it, bumping the recorded version is
+# enough to make a change look applied, and a PR could claim a version it does
+# not ship.
+name: vendored
+
+on:
+  push:
+    paths:
+      - 'third_party/**'
+      - 'src/**'
+      - 'scripts/update-vendored.sh'
+      - '.github/workflows/vendored.yml'
+  pull_request:
+    paths:
+      - 'third_party/**'
+      - 'src/**'
+      - 'scripts/update-vendored.sh'
+      - '.github/workflows/vendored.yml'
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # src/** is in the path filter because the API-surface half of `verify` reads
+  # src/, so a new ada_* call has to be checked against the vendored header even
+  # when third_party/ itself is untouched.
+  verify:
+    name: vendored sources match upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: scripts/update-vendored.sh verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  drift:
+    name: newer upstream release
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: check for newer releases and open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          out=$(scripts/update-vendored.sh check 2>&1); rc=$?
+          printf '%s\n' "$out"
+          # 2 is "a newer release exists", which is the reason this job runs;
+          # anything else non-zero is a genuine failure and should surface.
+          case $rc in
+            0) exit 0 ;;
+            2) ;;
+            *) exit "$rc" ;;
+          esac
+
+          # No heredoc: its terminator would have to sit at column 0, which ends
+          # the YAML block scalar this whole script lives in.
+          printf '%s\n' "$out" | sed -n 's/^drift: //p' | while read -r name old new; do
+            title="$name $new is available (vendored $old)"
+            # Title match rather than a label, so this needs no repo setup.
+            if gh issue list --state open --search "$title in:title" \
+                 --json title --jq '.[].title' | grep -qxF "$title"; then
+              echo "already open: $title"
+              continue
+            fi
+            body=$(printf '%s\n' \
+              "\`$name\` is vendored at $old; upstream has released $new." \
+              "" \
+              "To take it:" \
+              "" \
+              "    scripts/update-vendored.sh update $name" \
+              "" \
+              "That writes nothing if the new release drops an API \`src/\` uses," \
+              "rewrites the recorded version in \`third_party/vendored.manifest\`" \
+              "and the dependency README, and leaves building and testing to CI" \
+              "on the resulting commit." \
+              "" \
+              "Opened by \`.github/workflows/vendored.yml\`.")
+            gh issue create --title "$title" --body "$body"
+          done

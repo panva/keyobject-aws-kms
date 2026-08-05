@@ -1,0 +1,58 @@
+# OpenSSL configuration for the awskms provider.
+#
+#   node --openssl-config=@AWSKMS_CNF_FILE@ app.mjs
+#   OPENSSL_CONF=@AWSKMS_CNF_FILE@ node app.mjs
+#   NODE_OPTIONS=--openssl-config=@AWSKMS_CNF_FILE@
+#
+# Both top-level keys are declared on purpose. Node reads the section named by
+# its OpenSSL app name, `nodejs_conf`; the `openssl` CLI (and Node started with
+# --openssl-shared-config) reads `openssl_conf`. A file declaring only
+# `openssl_conf` is SILENTLY IGNORED by Node.
+openssl_conf = awskms_init
+nodejs_conf  = awskms_init
+
+[awskms_init]
+providers   = provider_sect
+alg_section = algs_sect
+
+[algs_sect]
+# Which implementation a property-query-less fetch gets is decided by the order
+# providers appear in the store, so registering keymgmt named "RSA"/"EC" can
+# shadow the default provider's for unrelated callers in the same process --
+# EVP_PKEY_Q_keygen() and the `openssl` CLI both break that way. This line makes
+# the outcome independent of ordering. The leading `?` keeps it a preference
+# rather than a requirement, so nothing hard-fails if `default` is ever absent.
+#
+# It does not lock this provider out of its own work: `awskms:` is the only
+# scheme we claim, and our own key operations are reached through a
+# provider-pinned retry.
+default_properties = ?provider!=awskms
+
+[provider_sect]
+# `default` is MANDATORY here. Activating any provider from config disables
+# OpenSSL's implicit default-provider fallback, and without it Node aborts during
+# startup with "Assertion failed: ncrypto::CSPRNG(nullptr, 0)".
+default = default_sect
+awskms  = awskms_sect
+
+[default_sect]
+activate = 1
+
+[awskms_sect]
+# An absolute path, WITH the platform extension. A bare name is resolved against
+# MODULESDIR and the extension is never appended once a directory is involved, so
+# `module = awskms` fails -- silently. A stock nodejs.org binary's compiled-in
+# MODULESDIR is a path on the release builder's machine, which is the other
+# reason to be absolute here.
+#
+# A failed load produces NO diagnostic: the process starts normally and then
+# fails at the first createPrivateKey(). Verify with
+#   openssl list -providers -provider-path <dir> -provider awskms
+module   = @AWSKMS_MODULE_FILE@
+activate = 1
+
+# Optional defaults for this provider. Both are defaults only: a URI attribute
+# wins, and so does the ordinary AWS environment (AWS_REGION, AWS_PROFILE, ...).
+# region  = eu-central-1
+# profile = awskms-dev
+# endpoint = http://127.0.0.1:4566

@@ -1,0 +1,12 @@
+# Vendored sources are never formatted.
+#
+# scripts/update-vendored.sh verify compares these files BYTE FOR BYTE against the
+# upstream release named in vendored.manifest. Reformatting even one line makes
+# them stop being the release they claim to be, and CI fails with a message about
+# the tree not matching upstream -- which is a confusing way to discover that an
+# editor reformatted 700 KB of amalgamated ada on save.
+#
+# The root .clang-format would otherwise apply here by inheritance. This stops it,
+# for the repo's tooling and for any editor that honours the config.
+DisableFormat: true
+SortIncludes: Never

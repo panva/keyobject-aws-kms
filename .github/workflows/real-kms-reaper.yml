@@ -1,0 +1,45 @@
+# The dead man's switch.
+#
+# Nothing in GitHub Actions covers a runner that dies outright, so the always()
+# teardown step in real-kms.yml is not a guarantee. This sweeps every key carrying
+# the test tag and schedules deletion for any not already pending.
+#
+# Running it unconditionally is safe because deletion is never cancelled in this
+# design: a key a test run still needs would be scheduled here, but scheduling is
+# reversible for seven days and re-running setup restores it. The alternative,
+# keys billing indefinitely after a lost runner, is worse.
+#
+# The accepted wart: a local run overlapping this job sees its keys scheduled and
+# starts failing, and is repaired by re-running setup.
+name: real-kms-reaper
+
+on:
+  schedule:
+    - cron: '43 3 * * *'
+  workflow_dispatch:
+
+# The SAME group as real-kms.yml, so the reaper can never race a test run.
+concurrency:
+  group: awskms-real-kms
+  queue: max
+
+permissions: {}
+
+jobs:
+  reap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWSKMS_ADMIN_ROLE_ARN }}
+          aws-region: ${{ vars.AWSKMS_TEST_REGION }}
+
+      # Orphans only: tagged keys that are not already pending deletion.
+      - name: Schedule orphaned test keys for deletion
+        run: node scripts/real-kms-keys.mjs reap --window 7

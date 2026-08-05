@@ -1,0 +1,255 @@
+# Builds and tests the provider. Until this existed, nothing did.
+#
+# The job that matters most is check-load: a provider that fails to load produces
+# NO diagnostic -- node starts fine and fails at the first createPrivateKey -- so
+# a build that merely compiles proves very little. check-load asserts the module
+# exports exactly one symbol, links no libcrypto, loads in the openssl CLI, and
+# that every OpenSSL symbol it needs is exported by the OLDEST node claimed to be
+# supported. That last check is the only defence against a symbol-skew failure,
+# which is all-or-nothing at dlopen and which node hides entirely.
+#
+# Both operating systems are built because this provider's bugs have been
+# asymmetric. libcrypto leaked into the Linux artifact for months while macOS was
+# clean, because aws-c-cal reaches for libcrypto only on non-Apple platforms and
+# the "links no libcrypto" property had been measured on macOS and written down as
+# universal. Linux needs ~223 OpenSSL symbols to macOS's ~68, so neither platform
+# is a proxy for the other.
+#
+# The aws backend is not built on every PR: it fetches ~206 MB of aws-sdk-cpp.
+# It runs on the schedule and on demand, which is also what keeps its cache warm --
+# GitHub evicts entries not accessed in 7 days, and nothing else here touches it.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Every 5 days rather than weekly, so the aws-sdk-cpp cache entry is refreshed
+    # inside GitHub's 7-day eviction window rather than exactly on it.
+    - cron: '17 5 */5 * *'
+  workflow_dispatch:
+
+# Deliberately no `paths:` filter. If this ever becomes a required status check, a
+# run skipped by a path filter never reports at all and blocks the merge.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR runs are cancelled; runs on main and the schedule are not,
+  # because those are the runs that populate the caches every PR reads, and a
+  # cancelled job does not save its cache. This is unlike real-kms.yml, whose
+  # `queue: max` exists so a cancelled run cannot abandon provisioned KMS keys --
+  # nothing here touches anything outside the runner.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions are pinned to full commit SHAs rather than tags; .github/dependabot.yml
+# rewrites the SHA and its trailing version comment together. See the longer note
+# in real-kms.yml for why a mutable tag is a live compromise path there.
+
+jobs:
+  node-versions:
+    uses: panva/.github/.github/workflows/node-versions.yml@main
+    with:
+      min: 26
+
+  build:
+    needs: node-versions
+    name: ${{ matrix.os }} / node ${{ matrix.node-version }} / ${{ matrix.backend }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # The whole point of building both platforms is that they differ. Stopping
+      # the matrix on the first failure would hide exactly the asymmetry this is
+      # here to catch.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+        # The aws backend costs a ~206 MB SDK fetch, so it is reserved for the
+        # schedule and for manual runs. Including workflow_dispatch means the
+        # expensive legs are reachable on demand -- before a release, when
+        # touching cmake/, or simply to refresh the cache.
+        backend: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Installed first so its path can be captured before the matrix node
+      # replaces it on PATH. check-load.sh is documented to take the OLDEST
+      # supported node first, and the matrix resolves to `current`, which is not
+      # the floor -- the undefined-symbol audit is only as good as the oldest host
+      # it runs against.
+      #
+      # 26.7.0 is where the OSSL_STORE loader shipped, so it is the floor by
+      # definition. NOTE it was still an open release proposal when this was
+      # written: neither nodejs.org nor the setup-node version manifest carried it
+      # yet, so this step -- and therefore CI -- fails until the release lands.
+      # That is the correct behaviour rather than a bug to work around: there is
+      # no released node this provider runs on before then.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.7.0'
+      - name: record the floor node
+        run: echo "AWSKMS_FLOOR_NODE=$(command -v node)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # libssl-dev is not optional for either backend: awskms_unit is only built
+      # when find_package(OpenSSL) locates libraries, and the aws backend fails at
+      # CONFIGURE time without a linkable libcrypto, because
+      # S2N_ENFORCE_PROPER_LIBCRYPTO_FEATURE_PROBE=ON turns an unlinkable one into
+      # a fatal error rather than a silently degraded s2n.
+      - name: install the linux prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+
+      # Two macOS-specific problems, both silent or confusing if left alone:
+      #   * homebrew's openssl@3 is keg-only and CMake's FindOpenSSL does not
+      #     search /opt/homebrew/opt, so find_package fails without a hint.
+      #   * /usr/bin/openssl is LibreSSL, which has no `list -providers`, so
+      #     check-load.sh's CLI probe and the HTTP KMS stub both need a real one
+      #     ahead of it on PATH.
+      - name: point at homebrew openssl
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          prefix="$(brew --prefix openssl@3)"
+          echo "OPENSSL_ROOT_DIR=$prefix" >> "$GITHUB_ENV"
+          echo "AWSKMS_OPENSSL=$prefix/bin/openssl" >> "$GITHUB_ENV"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      # The source tree only, never _deps/aws-sdk-cpp-build: object files are
+      # larger than the source and a stale object tree across compiler versions is
+      # a worse failure than a rebuild. No restore-keys: the fetch short-circuits
+      # on a .awskms-fetched-<tag> marker, so a partial-key restore would look
+      # fetched, carry the marker, and silently skip a re-fetch it needed.
+      - name: cache the aws sdk source
+        if: matrix.backend == 'aws'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/_deps/aws-sdk-cpp
+          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake') }}
+
+      - name: configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAWSKMS_BACKEND=${{ matrix.backend }}
+
+      - name: build
+        run: cmake --build build --parallel
+
+      - name: unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      # Both nodes: the floor for the symbol audit that catches trap (d), and the
+      # matrix node so a newer release is exercised too.
+      - name: check-load
+        run: scripts/check-load.sh build "$AWSKMS_FLOOR_NODE" "$(command -v node)"
+
+      # check-load.sh treats doctor exit 2 as a skip, by design -- it may be run
+      # against a node predating the STORE loader. Here 2 is fatal: this node is
+      # 26.7.0 or newer, so "cannot tell" means something is wrong.
+      - name: the provider is reachable
+        run: node --openssl-config="$PWD/build/awskms.cnf" scripts/awskms-doctor.mjs
+
+      # test/run.mjs prints an explanation and exits 0 when the node cannot pass a
+      # URL to createPrivateKey. That is right for a developer and wrong here: the
+      # node version comes from a resolving matrix, so a green no-op could appear
+      # at any time without anyone changing this file.
+      - name: end-to-end suites
+        run: |
+          set -euo pipefail
+          node test/run.mjs 2>&1 | tee /tmp/suite.log
+          if grep -q 'Skipping the end-to-end suites' /tmp/suite.log; then
+            echo "::error::the suites silently skipped -- $(node -p process.version) lacks the OSSL_STORE loader (needs >= 26.7.0)"
+            exit 1
+          fi
+          grep -qE '^. pass [1-9]' /tmp/suite.log || {
+            echo "::error::the suites reported no passing tests"
+            exit 1
+          }
+
+  openssl-headers:
+    name: openssl ${{ matrix.version }} headers
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor, the ML-DSA floor, and the next major. 3.6 is omitted
+        # deliberately: it sits between two covered versions and adds no API
+        # surface the other three do not already bracket.
+        version: ['3.0.21', '3.5.7', '4.0.1']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: cache the openssl prefix
+        id: ossl
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/awskms-openssl/${{ matrix.version }}
+          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ matrix.version }}
+
+      # A source tarball is NOT enough to point AWSKMS_OPENSSL_INCLUDE_DIR at:
+      # OpenSSL 3.x generates around twenty headers from .h.in templates. The
+      # validation in CMakeLists.txt checks for core_dispatch.h, which is NOT
+      # generated -- so a tarball would pass that check and then fail on the first
+      # generated include. install_sw gives a complete tree plus the CLI.
+      - name: build openssl ${{ matrix.version }}
+        if: steps.ossl.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          v='${{ matrix.version }}'
+          prefix="$HOME/.cache/awskms-openssl/$v"
+          curl -fsSL --retry 3 -o "openssl-$v.tar.gz" \
+            "https://github.com/openssl/openssl/releases/download/openssl-$v/openssl-$v.tar.gz"
+          tar xzf "openssl-$v.tar.gz"
+          cd "openssl-$v"
+          # --libdir=lib because some Linux configurations install to lib64, which
+          # would make the cache path and find_package platform-dependent for no
+          # reason. --openssldir keeps the built CLI from reading /etc/ssl and
+          # picking up a system config that activates providers.
+          #
+          # Docs are skipped by building the `build_sw` target rather than by
+          # passing `no-docs`, which 3.0 does not accept -- measured:
+          # "***** Unsupported options: no-docs", since it arrived after 3.0.
+          # build_sw exists in all three versions, so one recipe covers the matrix
+          # with no version-conditional flags.
+          ./Configure --prefix="$prefix" --openssldir="$prefix/ssl" --libdir=lib no-tests
+          make -j"$(nproc)" build_sw
+          make install_sw
+
+      # An explicit include dir is required: with no arguments the script probes
+      # homebrew then nix and exits 2 on a stock runner, and its nix path wants a
+      # nodejs checkout for tools/nix/openssl-matrix.nix.
+      - name: build against those headers
+        run: scripts/check-openssl-matrix.sh "$HOME/.cache/awskms-openssl/${{ matrix.version }}/include"
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned exactly. clang-format's output changes between majors, and the
+      # runner image ships 18 while .clang-format was calibrated against 22 --
+      # an unpinned binary would fail on correctly formatted code. Dependabot
+      # does not track this pin; bump it by hand and re-run clang-format -i.
+      # A venv rather than pipx or a bare pip: ubuntu blocks pip outside a venv
+      # (PEP 668), and this form needs nothing beyond python3, so it does not
+      # depend on what the runner image happens to preinstall.
+      - name: clang-format
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/cf
+          /tmp/cf/bin/pip install -q clang-format==22.1.8
+          /tmp/cf/bin/clang-format --version
+          /tmp/cf/bin/clang-format --dry-run --Werror \
+            src/*.c src/*.h src/*.cc test/unit_*.c test/unit.h
+
+      # Preinstalled on GitHub's ubuntu images. SC2001 is excluded: the scripts
+      # use sed for indentation in a way the suggested parameter expansion does
+      # not express as readably.
+      - name: shellcheck
+        run: shellcheck -e SC2001 scripts/*.sh
