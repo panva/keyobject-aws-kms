@@ -133,6 +133,19 @@ else()
   set(_awskms_ssl_version "${OPENSSL_VERSION}")
 endif()
 
+# The HEADER version, read from the headers themselves rather than from
+# find_package, so it is known on both branches above -- the explicit-include-dir
+# branch never runs find_package and so has no version to report. What matters
+# for feature availability is what we COMPILE against, not what the host will
+# turn out to have at dlopen time; those differ more often than one expects, and
+# a distro on 3.0 headers under a node bundling 3.5 is the common case.
+set(_awskms_ssl_header_version "0")
+if(EXISTS "${_awskms_ssl_include}/openssl/opensslv.h")
+  file(STRINGS "${_awskms_ssl_include}/openssl/opensslv.h" _v
+    REGEX "^# *define +OPENSSL_VERSION_STR +\"[0-9]+\\.[0-9]+\\.[0-9]+\"")
+  string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" _awskms_ssl_header_version "${_v}")
+endif()
+
 add_library(awskms_openssl_headers INTERFACE)
 target_include_directories(awskms_openssl_headers SYSTEM INTERFACE
   "${_awskms_ssl_include}")
@@ -305,6 +318,31 @@ endif()
 # Recorded next to the module so the test driver knows whether to start the HTTP
 # KMS stub: the aws backend needs something to talk to, the stub backend does not.
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/awskms-backend" "${AWSKMS_BACKEND}\n")
+
+# Whether the STUB backend can sign ML-DSA, which depends on the OpenSSL HEADERS
+# this was built against rather than on the host it will run on. src/kms_stub.c
+# needs EVP_PKEY_sign_message_init (a 3.5 linker symbol) for EXTERNAL_MU, and
+# compiles that path out below 3.5.
+#
+# The distinction is easy to miss and cost a confusing CI failure: a node with a
+# bundled OpenSSL 3.5 can generate ML-DSA keys perfectly well, so the tests'
+# runtime probe says ML-DSA is available -- while the stub they are signing
+# against was built on a distro shipping 3.0 headers and cannot sign it. The
+# tests read this marker so they skip on the build-time fact rather than the
+# runtime one. Only the stub is affected; the real backend never signs locally,
+# and computes mu with SHAKE256, which is 3.0-era.
+if(AWSKMS_BACKEND STREQUAL "stub" AND _awskms_ssl_header_version VERSION_LESS 3.5)
+  set(_awskms_stub_mldsa "no")
+  message(WARNING
+    "OpenSSL headers are ${_awskms_ssl_header_version}; the stub backend cannot "
+    "sign ML-DSA below 3.5, so those tests will be skipped. This says nothing "
+    "about the provider itself -- only the test fake signs locally, and the real "
+    "backend computes mu with SHAKE256, which is 3.0-era. Build against 3.5+ "
+    "headers to exercise ML-DSA end to end.")
+else()
+  set(_awskms_stub_mldsa "yes")
+endif()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/awskms-stub-mldsa" "${_awskms_stub_mldsa}\n")
 
 set(AWSKMS_MODULE_FILE "$<TARGET_FILE:awskms>")
 set(AWSKMS_CNF_FILE "${CMAKE_CURRENT_BINARY_DIR}/awskms.cnf")

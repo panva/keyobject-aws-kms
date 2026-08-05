@@ -12,6 +12,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { uri } from './inventory.mjs';
+import { hasMlDsa, mlDsaSkipReason } from './capabilities.mjs';
 import { skipFor } from './real-keys.mjs';
 
 const { subtle } = globalThis.crypto;
@@ -19,14 +20,6 @@ const DATA = randomBytes(256);
 
 const load = (label) => createPrivateKey({ key: new URL(uri('test', label)) });
 
-const hasMlDsa = (() => {
-  try {
-    generateKeyPairSync('ml-dsa-44');
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 /* `importAlgorithm` is what toCryptoKey() takes; `signAlgorithm` is what
  * subtle.sign() takes. They differ where the operation carries a parameter the
@@ -65,7 +58,7 @@ for (const c of CASES) {
   const title = c.name ?? `${c.label} (${c.importAlgorithm.name})`;
   const signAlgorithm = c.signAlgorithm ?? c.importAlgorithm.name;
 
-  describe(`WebCrypto ${title}`, { skip: skipFor(c.label, c.needsMlDsa && !hasMlDsa ? 'needs OpenSSL 3.5+' : false) }, () => {
+  describe(`WebCrypto ${title}`, { skip: skipFor(c.label, c.needsMlDsa && !hasMlDsa ? mlDsaSkipReason : false) }, () => {
     const keys = () => {
       const privateKey = load(c.label);
       return {

@@ -22,20 +22,13 @@ import {
   verify as cryptoVerify,
 } from 'node:crypto';
 import { uri } from './inventory.mjs';
+import { hasMlDsa, mlDsaSkipReason } from './capabilities.mjs';
 import { skipFor } from './real-keys.mjs';
 
 const { subtle } = globalThis.crypto;
 const DATA = randomBytes(128);
 const load = (label) => createPrivateKey({ key: new URL(uri('test', label)) });
 
-const hasMlDsa = (() => {
-  try {
-    generateKeyPairSync('ml-dsa-44');
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 const CASES = [
   {
@@ -117,7 +110,7 @@ const CASES = [
 const PRIVATE_JWK_MEMBERS = ['d', 'k', 'p', 'q', 'dp', 'dq', 'qi', 'priv', 'seed'];
 
 for (const c of CASES) {
-  describe(`${c.label} exports`, { skip: skipFor(c.label, c.needsMlDsa && !hasMlDsa ? 'needs OpenSSL 3.5+' : false) }, () => {
+  describe(`${c.label} exports`, { skip: skipFor(c.label, c.needsMlDsa && !hasMlDsa ? mlDsaSkipReason : false) }, () => {
     const pub = () => createPublicKey(load(c.label));
 
     /* ---------------------------------------------------- node:crypto, public */

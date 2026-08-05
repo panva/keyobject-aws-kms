@@ -16,6 +16,7 @@ import {
   getCurves,
 } from 'node:crypto';
 import { uri } from './inventory.mjs';
+import { hasMlDsa, mlDsaSkipReason } from './capabilities.mjs';
 import { realArn, regionAttr, skipFor } from './real-keys.mjs';
 
 /* The stub backend picks a key spec from any KeySpec name in the key id, so
@@ -101,18 +102,9 @@ const CASES = [
   },
 ];
 
-/* ML-DSA needs OpenSSL 3.5+; skip rather than fail on older hosts. */
-const hasMlDsa = (() => {
-  try {
-    generateKeyPairSync('ml-dsa-44');
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 for (const c of CASES) {
-  describe(c.label, { skip: skipFor(c.label, c.needs === 'ml-dsa' && !hasMlDsa ? 'needs OpenSSL 3.5+' : false) }, () => {
+  describe(c.label, { skip: skipFor(c.label, c.needs === 'ml-dsa' && !hasMlDsa ? mlDsaSkipReason : false) }, () => {
     const load = () => createPrivateKey({ key: new URL(c.uri) });
 
     test('loads as a private key with the right identity', () => {

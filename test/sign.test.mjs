@@ -25,6 +25,7 @@ import {
   verify as cryptoVerify,
 } from 'node:crypto';
 import { uri } from './inventory.mjs';
+import { hasMlDsa, mlDsaSkipReason } from './capabilities.mjs';
 import { skipFor, skipForAny } from './real-keys.mjs';
 
 const DATA = randomBytes(1024);
@@ -466,21 +467,13 @@ describe('Ed25519', { skip: skipFor('ECC_NIST_EDWARDS25519') }, () => {
  * referencing (it is a linker symbol, and depending on it would break the
  * one-build-any-host property). test/kms-stub.mjs shells out to pkeyutl instead.
  */
-const hasMlDsa = (() => {
-  try {
-    generateKeyPairSync('ml-dsa-44');
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 for (const [label, sigLen, pubLen] of [
   ['ML_DSA_44', 2420, 1312],
   ['ML_DSA_65', 3309, 1952],
   ['ML_DSA_87', 4627, 2592],
 ]) {
-  describe(`${label}`, { skip: skipFor(label, !hasMlDsa ? 'needs OpenSSL 3.5+' : false) }, () => {
+  describe(`${label}`, { skip: skipFor(label, !hasMlDsa ? mlDsaSkipReason : false) }, () => {
     test('signs and verifies with no digest', () => {
       const key = load(label);
       const pub = createPublicKey(key);
@@ -571,7 +564,7 @@ for (const [label, sigLen, pubLen] of [
  * gets signed. Everywhere else KMS signs the message or digest directly with no
  * context, so a non-empty context must be refused rather than silently dropped.
  */
-describe('ML-DSA context strings', { skip: skipFor('ML_DSA_44', !hasMlDsa ? 'needs OpenSSL 3.5+' : false) }, () => {
+describe('ML-DSA context strings', { skip: skipFor('ML_DSA_44', !hasMlDsa ? mlDsaSkipReason : false) }, () => {
   const label = 'ML_DSA_44';
   const PUB_LEN = 1312;
 
@@ -797,7 +790,7 @@ describe('public key round-tripped through PEM', () => {
   ];
 
   for (const f of FAMILIES) {
-    describe(f.label, { skip: skipFor(f.label, f.needsMlDsa && !hasMlDsa ? 'needs OpenSSL 3.5+' : false) }, () => {
+    describe(f.label, { skip: skipFor(f.label, f.needsMlDsa && !hasMlDsa ? mlDsaSkipReason : false) }, () => {
       const exportPem = (key) =>
         createPublicKey(key).export({ type: 'spki', format: 'pem' });
 

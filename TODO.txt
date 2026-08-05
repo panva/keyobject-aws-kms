@@ -225,6 +225,33 @@ WORK
         BEFORE key creation, so a module that leaks libcrypto is caught before
         money is spent rather than after.
 
+        WHAT CI CAUGHT ON ITS FIRST RUN, 2026-08-05. 20 ML-DSA failures on both
+        Linux legs, macOS green. Cause: ubuntu ships OpenSSL 3.0.13 headers while
+        node 26.7.0 bundles 3.5.7, and src/kms_stub.c compiles out its EXTERNAL_MU
+        path below 3.5 (EVP_PKEY_sign_message_init is a 3.5 linker symbol). So the
+        RUNTIME could do ML-DSA and the test FAKE could not.
+
+        The tests already had ML-DSA skip machinery -- it was just asking the
+        wrong question. hasMlDsa was duplicated in four files and each probed the
+        HOST via generateKeyPairSync('ml-dsa-44'), which is true on any node with
+        3.5+. The question that matters for the stub is a BUILD-time one.
+
+        Fixed: CMake reads the version out of the HEADERS (works on both the
+        find_package and the explicit-include-dir paths, the latter previously
+        having no version at all), writes an awskms-stub-mldsa marker beside the
+        module, and WARNS at configure time. test/capabilities.mjs is now the one
+        place that answers it, and the skip reason names which of the two reasons
+        applied. Verified both ways: 3.0.21 headers -> 289 pass 0 fail (was 20
+        failures); 3.6.3 headers -> 374 pass 6 skipped, the recorded baseline.
+
+        THE PRODUCT WAS NEVER AFFECTED. Only the test fake signs locally; the real
+        backend has KMS sign and computes mu with SHAKE256, which is 3.0-era.
+
+        CONSEQUENCE TO KNOW: with ubuntu's 3.0 headers, ML-DSA is now SKIPPED on
+        both Linux legs, so it is exercised end to end only on macOS. If that
+        matters, the cheap upgrade is to point the Linux build at the 3.5.7 tree
+        the openssl-headers job already builds and caches.
+
         THE DIVISION OF LABOUR, decided after the two workflows briefly had
         IDENTICAL trigger sets and became impossible to tell apart:
           ci.yml        runs PER COMMIT. Free. Builds, loads, tests, lints.
