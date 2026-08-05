@@ -121,7 +121,26 @@ block the work items that name them
         The register() docstring in npm/core/index.js already says so.
 
 [ ] Q3. musl (and win32) in or out for v1.
-        Currently out. Four release artifacts if out, six if musl is in. musl is
+        darwin-x64 is DECIDED and DONE 2026-08-05: built NATIVELY on
+        macos-15-intel, added to the CI matrix, which is now all four targets.
+        Not cross-compiled and not Rosetta -- Apple is deprecating it, and there
+        is no Rosetta on the arm64 runner image anyway, so a cross-built artifact
+        would have shipped never having been executed. Every artifact is now one
+        that ran on the architecture it targets.
+
+        That also closed a real gap: the npm core package listed darwin-x64 in
+        optionalDependencies while nothing built it, so an Intel Mac user would
+        have installed cleanly and hit "not installed" at first use.
+
+        AND A TRAP FOUND WHILE ADDING IT: the archive-naming step mapped
+        `macos-*` to darwin-arm64 unconditionally, which would have labelled the
+        Intel leg's x86_64 bytes as arm64. Names now come from
+        `node -p "process.platform + '-' + process.arch"` -- the exact expression
+        the npm package uses to look the satellite up, so the artifact name and
+        the lookup cannot drift and there is no table to forget.
+
+        STILL OPEN HERE: musl and win32. Currently out. Four release artifacts if
+        out, six if musl is in. musl is
         a genuinely different artifact -- different libc ABI, no symbol
         versioning, so none of the glibc analysis carries over -- and has no
         GitHub-hosted runner. win32 needs different N-API code entirely.

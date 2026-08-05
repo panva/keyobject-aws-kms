@@ -76,7 +76,7 @@ jobs:
       # here to catch.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
         # The aws backend costs a ~206 MB SDK fetch, so it is reserved for the
         # schedule, for manual runs, and for tags. workflow_dispatch means the
@@ -122,7 +122,9 @@ jobs:
 
       # Two macOS-specific problems, both silent or confusing if left alone:
       #   * homebrew's openssl@3 is keg-only and CMake's FindOpenSSL does not
-      #     search /opt/homebrew/opt, so find_package fails without a hint.
+      #     search its prefix, so find_package fails without a hint. `brew
+      #     --prefix` is asked rather than hardcoded because it differs by
+      #     architecture: /opt/homebrew on arm64, /usr/local on Intel.
       #   * /usr/bin/openssl is LibreSSL, which has no `list -providers`, so
       #     check-load.sh's CLI probe and the HTTP KMS stub both need a real one
       #     ahead of it on PATH.
@@ -227,11 +229,14 @@ jobs:
         id: stage
         run: |
           set -euo pipefail
-          case "${{ matrix.os }}" in
-            macos-*)            target=darwin-arm64 ;;
-            ubuntu-24.04-arm)   target=linux-arm64  ;;
-            *)                  target=linux-x64    ;;
-          esac
+          # Ask node what platform this is, rather than mapping runner labels.
+          # `${process.platform}-${process.arch}` is EXACTLY the key the npm core
+          # package looks the satellite up by, so the artifact name and the
+          # lookup cannot drift -- and there is no table to forget to update.
+          #
+          # The label-mapping version had `macos-*) target=darwin-arm64`, which
+          # would have quietly labelled the Intel leg's x86_64 bytes as arm64.
+          target=$(node -p "process.platform + '-' + process.arch")
           dir="awskms-${target}"
           mkdir -p "stage/$dir"
           cp build/awskms.dylib "stage/$dir/" 2>/dev/null || cp build/awskms.so "stage/$dir/"
