@@ -5,6 +5,7 @@
   "license": "MIT",
   "os": ["@OS@"],
   "cpu": ["@CPU@"],
+  "libc": @LIBC@,
   "files": [
     "@MODULE@",
     "awskms.cnf",

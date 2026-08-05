@@ -33,7 +33,22 @@ case "$(uname -m)" in
   arm64|aarch64) CPU=arm64 ;;
   *)             CPU=x64   ;;
 esac
-TARGET="$OS-$CPU"
+
+# glibc and musl are different C libraries, not versions of one, so a Linux
+# artifact needs a third term. Asked of node rather than sniffed from the
+# filesystem, because this must agree EXACTLY with what npm/core/index.js
+# computes at runtime -- if the packer and the resolver disagree, a correctly
+# installed package fails to find itself. glibcVersionRuntime is present on
+# glibc and absent on musl.
+if [[ $OS == linux ]]; then
+  if node -p "process.report.getReport().header.glibcVersionRuntime ?? ''" | grep -q .; then
+    LIBC=glibc; TARGET="linux-$CPU"
+  else
+    LIBC=musl;  TARGET="linuxmusl-$CPU"
+  fi
+else
+  LIBC=; TARGET="$OS-$CPU"
+fi
 
 [[ -f $BUILD_DIR/$MODULE ]] || die "no $MODULE in $BUILD_DIR -- build it first"
 # The RELOCATABLE cnf, not the build-tree one: the satellite ships a file whose
@@ -49,9 +64,16 @@ echo "packing $TARGET $VERSION into $OUT"
 # --- the platform package ---------------------------------------------------
 sat="$OUT/platform"
 mkdir -p "$sat"
+# `libc` is npm's INSTALL-time gate and only means anything on linux; on darwin
+# the key is dropped rather than emitted empty.
+if [[ -n $LIBC ]]; then _libc="[\"$LIBC\"]"; fi
 sed -e "s|@TARGET@|$TARGET|g" -e "s|@VERSION@|$VERSION|g" \
     -e "s|@OS@|$OS|g" -e "s|@CPU@|$CPU|g" -e "s|@MODULE@|$MODULE|g" \
-    npm/platform/package.json.in > "$sat/package.json"
+    npm/platform/package.json.in \
+  | if [[ -n $LIBC ]]; then sed "s|@LIBC@|${_libc}|"; else grep -v '"libc": @LIBC@,'; fi \
+  > "$sat/package.json"
+node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$sat/package.json" \
+  || die "generated satellite package.json is not valid JSON"
 cp "$BUILD_DIR/$MODULE" "$sat/"
 cp "$BUILD_DIR/awskms.relocatable.cnf" "$sat/awskms.cnf"
 cp LICENSE "$sat/"

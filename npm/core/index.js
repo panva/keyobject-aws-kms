@@ -30,15 +30,37 @@ export const version = JSON.parse(
  * invisible to them and silently produces a broken bundle. Every reference
  * package (esbuild, sharp) does it this way for the same reason.
  *
- * The keys are exactly `${process.platform}-${process.arch}`, which is also how
- * the release artifacts are named, so there is no mapping table to drift.
+ * Keys match the release artifact names exactly, so there is no mapping table to
+ * drift. That is `${process.platform}-${process.arch}` everywhere except musl,
+ * which needs a third term -- see targetKey().
  */
 const PLATFORM_PACKAGES = {
   'darwin-arm64': '@awskms-openssl-provider/darwin-arm64',
   'darwin-x64': '@awskms-openssl-provider/darwin-x64',
   'linux-arm64': '@awskms-openssl-provider/linux-arm64',
   'linux-x64': '@awskms-openssl-provider/linux-x64',
+  'linuxmusl-arm64': '@awskms-openssl-provider/linuxmusl-arm64',
+  'linuxmusl-x64': '@awskms-openssl-provider/linuxmusl-x64',
 };
+
+/*
+ * glibc and musl are different C libraries, not versions of one: a module linked
+ * against glibc does not run on musl at all, which is what Alpine ships. Neither
+ * process.platform nor process.arch says which, so the key needs a third term.
+ *
+ * glibcVersionRuntime is present in the process report on glibc and absent on
+ * musl -- measured on node:22 (2.36) against node:22-alpine (absent). npm gates
+ * the INSTALL with the `libc` field on the satellite; this is the RUNTIME half,
+ * and both have to agree or a correctly-installed package fails to resolve.
+ *
+ * `linuxmusl-x64` rather than `linux-musl-x64` follows sharp, which is the
+ * established convention for this in the npm ecosystem.
+ */
+function targetKey() {
+  if (platform !== 'linux') return `${platform}-${arch}`;
+  const musl = !process.report.getReport().header.glibcVersionRuntime;
+  return `linux${musl ? 'musl' : ''}-${arch}`;
+}
 
 /* The module keeps its canonical name in every tier -- the release tarball and
  * the npm satellite ship byte-identical files -- so `openssl list -provider-path`
@@ -48,7 +70,7 @@ const PLATFORM_PACKAGES = {
  * require() on the binary. */
 const MODULE_FILE = platform === 'darwin' ? 'awskms.dylib' : 'awskms.so';
 
-const target = `${platform}-${arch}`;
+const target = targetKey();
 
 function fail(problems) {
   const e = new Error(
@@ -90,7 +112,8 @@ function resolveModule() {
       '     If you used --omit=optional or --no-optional, reinstall with:\n' +
       '       npm install --include=optional\n' +
       '     If you installed on a different platform than you are running on:\n' +
-      `       npm install --os=${platform} --cpu=${arch}`);
+      `       npm install --os=${platform} --cpu=${arch}` +
+      (platform === 'linux' ? ` --libc=${target.startsWith('linuxmusl') ? 'musl' : 'glibc'}` : ''));
   }
 
   /* A bundler that inlined this file rather than treating it as external. The

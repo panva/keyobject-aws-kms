@@ -8,11 +8,13 @@ Signing is DONE for every key spec in scope and verified against real AWS KMS.
 398 aws-backend tests, 374 offline, 219 C unit checks, clean against OpenSSL
 3.0.21 / 3.5.7 / 3.6.3 / 4.0.1, on macOS-arm64 and Linux-arm64.
 
-CI is live and green as of 2026-08-05, on real runners rather than only locally:
-ci.yml across ubuntu-latest / ubuntu-24.04-arm / macos-latest, both backends, all
-11 jobs; real-kms.yml against the actual service (208 passing, 0 keys left
-billable); and three release artifacts built, uploaded, and verified by
-downloading one and running it. Requires Node >= 26.7.0, which published that
+CI is live as of 2026-08-05, on real runners rather than only locally: ci.yml
+over SIX targets -- darwin-{arm64,x64}, linux-{x64,arm64}, linuxmusl-{x64,arm64}
+-- both backends; real-kms.yml against the actual service (208 passing, 0 keys
+left billable); and release artifacts built, uploaded, and verified by
+downloading one and running it. The six-target matrix is pushed but not yet
+observed green on a runner: four of the six legs had never executed before, and
+the musl pair is verified locally against a real Alpine container instead. Requires Node >= 26.7.0, which published that
 day; the floor lives in .node-version and is read by both workflows.
 
 THIS FILE IS ONLY WHAT IS LEFT. Why things are the way they are -- decisions,
@@ -120,9 +122,10 @@ block the work items that name them
         arbitrary native code. Under --permission, prefer opensslConfigPath().
         The register() docstring in npm/core/index.js already says so.
 
-[ ] Q3. musl (and win32) in or out for v1.
+[x] Q3. RESOLVED 2026-08-05. musl is IN (six targets); win32 stays BLOCKED,
+        which is a platform fact rather than a support decision.
         darwin-x64 is DECIDED and DONE 2026-08-05: built NATIVELY on
-        macos-15-intel, added to the CI matrix, which is now all four targets.
+        macos-15-intel.
         Not cross-compiled and not Rosetta -- Apple is deprecating it, and there
         is no Rosetta on the arm64 runner image anyway, so a cross-built artifact
         would have shipped never having been executed. Every artifact is now one
@@ -139,11 +142,62 @@ block the work items that name them
         the npm package uses to look the satellite up, so the artifact name and
         the lookup cannot drift and there is no table to forget.
 
-        STILL OPEN HERE: musl. A genuinely different artifact -- different libc
-        ABI, no symbol versioning, so none of the glibc analysis carries over --
-        and no GitHub-hosted runner. Four release artifacts if out, five if in.
-        A support commitment, not a technical question.
-        Blocks: the matrix in T4.
+        MUSL IS IN, DONE 2026-08-05. Six targets: darwin-{arm64,x64},
+        linux-{x64,arm64}, linuxmusl-{x64,arm64}. Built by the build-musl job
+        and verified on arm64 locally against a real Alpine container, BOTH
+        backends -- 374/374 stub, 398/398 aws, check-load clean (no libcrypto,
+        full symbol audit against a musl node), archive staged, unpacked
+        elsewhere and re-verified, all 16 npm checks.
+
+        The aws backend on musl was the last unverified combination and the one
+        that ships; a passing stub build has never implied a passing aws build
+        on any other platform either.
+
+        "UNOFFICIAL BUILDS" TURNED OUT TO BE A NON-ISSUE, and an earlier note
+        here saying the README should flag linuxmusl-* as resting on lesser
+        footing was wrong and is withdrawn. nodejs.org/dist has no musl builds
+        at all, so the floor comes from nodejs/unofficial-builds. Measured
+        rather than assumed: the OpenSSL symbols exported by that build were
+        compared one by one against the node:26-alpine image's own node --
+        4648 each, ZERO in either direction, across two different node versions
+        (26.7.0 vs 26.6.0). Since binding undefined OpenSSL symbols to the host
+        is the entire mechanism this provider rests on, that surface is the only
+        thing that matters and the two are interchangeable. Node classifying
+        musl "Experimental" is a statement about Alpine generally, not about
+        this provider, and does not belong in our README.
+
+        THREE TRAPS FOUND WHILE ADDING IT, all silent:
+
+        (a) THE CI MATRIX SILENTLY COLLAPSED TO ONE JOB. The platforms were
+            listed under `include:`, and an include entry whose keys are ALL
+            absent from the base matrix does not create a combination -- it is
+            merged into the existing ones. `node-version` and `backend` each
+            resolve to one value on a push, so there was exactly ONE
+            combination; all six platform entries merged into it, each
+            overwriting the last, and the matrix produced a single job carrying
+            the LAST entry's values. Five of six legs never ran and nothing
+            reported anything. Fixed by making the platform a real
+            object-valued key, which cross-multiplies. This is why the failure
+            surfaced as an arm64-Alpine error: the surviving entry happened to
+            be the arm64 Alpine one.
+
+        (b) `container: node:26-alpine` CANNOT WORK ON ARM64. The runner
+            injects its own node to execute JavaScript actions and refuses
+            outright: "JavaScript Actions in Alpine containers are only
+            supported on x64 Linux runners." So actions/checkout dies before
+            any step of ours. The musl legs now drive the container with
+            `docker run` from an ordinary glibc runner instead -- checkout,
+            cache and upload-artifact stay outside, only the build and tests go
+            in. Identical on both architectures, and it removed an `if:` from
+            nearly every step of the main build job.
+
+        (c) THE ARCHIVE NAME WOULD HAVE COLLIDED. Staging derives the target
+            from `process.platform + '-' + process.arch`, but node reports plain
+            "linux" under musl too -- so a musl leg would have produced
+            `awskms-linux-x64`, the same name as the glibc artifact, shipping
+            musl bytes under a glibc key. The musl job hardcodes
+            `linuxmusl-<arch>` (it only ever runs on musl) and the glibc job now
+            ASSERTS glibcVersionRuntime is present rather than trusting it.
 
         WIN32 IS NOT A SUPPORT DECISION, IT IS BLOCKED. Read node's build config
         rather than measured -- there is no Windows machine here -- but the
@@ -558,10 +612,11 @@ WORK
         node refuses to start; set-but-wrong -> silent no-load, caught by the
         doctor, which prints the path it expanded to.
 
-        STILL TO DO for a real release: SHA256SUMS, build-provenance attestation,
-        gh release create, darwin-x64 (deliberately absent from the CI matrix),
-        and docs/INSTALL.md. Blocked on Q3 (musl) and Q4 (glibc floor), which decide the
-        matrix. Q1 is tier 3 only. Q5 is answered -- INSTALL.md can now say what
+        STILL TO DO for a real release: docs/INSTALL.md, and a tag to prove the
+        publish half end to end. SHA256SUMS, the build-provenance attestation
+        and `gh release create` are WRITTEN but untested -- publishing is the one
+        step nothing has exercised, by construction. Blocked on Q4 (glibc
+        floor), which decides the floor the artifacts claim. Q1 is tier 3 only. Q5 is answered -- INSTALL.md can now say what
         it needs to say about merging configs.
 
         TWO BUGS IN awskms-doctor.mjs THAT ONLY THE TARBALL PATH EXPOSED, both

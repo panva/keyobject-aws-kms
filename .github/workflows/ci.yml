@@ -67,8 +67,8 @@ jobs:
 
   build:
     needs: node-versions
-    name: build & test ${{ matrix.os }} / node ${{ matrix.node-version }} / ${{ matrix.backend }}
-    runs-on: ${{ matrix.os }}
+    name: build & test ${{ matrix.platform.os }} / node ${{ matrix.node-version }} / ${{ matrix.backend }}
+    runs-on: ${{ matrix.platform.os }}
     timeout-minutes: 30
     strategy:
       # The whole point of building both platforms is that they differ. Stopping
@@ -76,7 +76,23 @@ jobs:
       # here to catch.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+        # An OBJECT-VALUED KEY, deliberately, rather than `include:`. This bit
+        # once and cost five of six legs: an include entry whose keys are all
+        # absent from the base matrix does not create a new combination, it is
+        # MERGED INTO the existing ones. `node-version` and `backend` each
+        # resolve to a single value on a push, so there was exactly ONE
+        # combination -- and all six platform entries merged into it, each
+        # overwriting the last. The matrix expanded to a single job carrying the
+        # LAST entry's values, four platforms never ran, and nothing anywhere
+        # reported a problem. A real key cross-multiplies, which is the intent.
+        #
+        # musl is not here: it needs a different libc, a different node source
+        # and a different runner arrangement entirely -- see the build-musl job.
+        platform:
+          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
+          - os: macos-latest
+          - os: macos-15-intel
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
         # The aws backend costs a ~206 MB SDK fetch, so it is reserved for the
         # schedule, for manual runs, and for tags. workflow_dispatch means the
@@ -237,6 +253,14 @@ jobs:
           # The label-mapping version had `macos-*) target=darwin-arm64`, which
           # would have quietly labelled the Intel leg's x86_64 bytes as arm64.
           target=$(node -p "process.platform + '-' + process.arch")
+          # This job is glibc-only; musl is built by build-musl, which names its
+          # artifacts linuxmusl-<arch>. node reports plain "linux" under EITHER
+          # libc, so a musl leg reappearing here would silently produce a
+          # colliding linux-<arch> name carrying musl bytes -- installable, and
+          # then broken at dlopen for everyone who got it.
+          node -e 'if (process.platform === "linux" && !process.report.getReport().header.glibcVersionRuntime) {
+                     console.error("::error::musl host in the glibc build job; the artifact would be misnamed");
+                     process.exit(1) }'
           dir="awskms-${target}"
           mkdir -p "stage/$dir"
           cp build/awskms.dylib "stage/$dir/" 2>/dev/null || cp build/awskms.so "stage/$dir/"
@@ -287,6 +311,71 @@ jobs:
       # checked on the schedule, never on the pull request that changed them.
       - name: npm packages
         run: scripts/npm-pack.sh build
+
+  # musl. A different C library, not a different version of one -- a glibc-linked
+  # module does not run on Alpine at all -- so these are genuinely separate
+  # artifacts rather than a rebuild of the linux-* ones.
+  #
+  # A separate JOB rather than two more legs of `build` because almost nothing is
+  # shared: setup-node cannot serve it (nodejs.org/dist publishes no musl builds),
+  # there is no apt, and the work has to happen inside a container the GitHub
+  # runner is unable to host actions in on arm64. Folding that into `build` meant
+  # an `if:` on nearly every step. The long version is in scripts/ci-alpine.sh.
+  build-musl:
+    name: build & test alpine ${{ matrix.platform.arch }} / ${{ matrix.backend }}
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Object-valued for the same reason as `build` above -- an `include:`
+        # entry adding only new keys is merged into the existing combinations
+        # instead of multiplying them, and collapses this to one job.
+        platform:
+          - os: ubuntu-latest
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+        backend: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Deliberately the SAME key as the glibc legs, so this shares their cache
+      # rather than fetching its own copy. The cached path is the SDK's source
+      # tree only, which is identical across libc and architecture; nothing
+      # compiled goes in it.
+      - name: cache the aws sdk source
+        if: matrix.backend == 'aws'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/_deps/aws-sdk-cpp
+          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake') }}
+
+      # The runner is glibc and stays that way: checkout, cache and
+      # upload-artifact all run out here, where the runner's own node works. Only
+      # the build and the tests go inside, which is the only part that needs musl.
+      # No QEMU -- ubuntu-24.04-arm is a real arm64 host, so the arm64 image runs
+      # natively.
+      #
+      # The alpine tag is a plain version pin. Dependabot cannot see it (there is
+      # no Dockerfile and no docker ecosystem entry for a bare `docker run`), so
+      # it is bumped by hand.
+      - name: build & test in alpine
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
+            alpine:3.24 \
+            ./scripts/ci-alpine.sh '${{ matrix.backend }}' '${{ matrix.platform.arch }}'
+
+      - name: upload the archive
+        if: matrix.backend == 'aws'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: awskms-linuxmusl-${{ matrix.platform.arch }}
+          path: awskms-linuxmusl-${{ matrix.platform.arch }}.tar.gz
+          if-no-files-found: error
 
   openssl-headers:
     name: openssl ${{ matrix.version }} headers
@@ -380,7 +469,7 @@ jobs:
   # every schedule and dispatch rather than waiting for one.
   release:
     name: publish the release
-    needs: build
+    needs: [build, build-musl]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
