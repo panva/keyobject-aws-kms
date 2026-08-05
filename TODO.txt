@@ -225,7 +225,36 @@ WORK
         BEFORE key creation, so a module that leaks libcrypto is caught before
         money is spent rather than after.
 
-        STILL OPEN, needs an AWS-side change -- see Q6.
+        THE DIVISION OF LABOUR, decided after the two workflows briefly had
+        IDENTICAL trigger sets and became impossible to tell apart:
+          ci.yml        runs PER COMMIT. Free. Builds, loads, tests, lints.
+          real-kms.yml  does NOT run on push to main. "Does it still work against
+                        the actual service" wants answering periodically and on
+                        demand -- the daily cron covers the first, the `real-kms`
+                        label the second. A per-push run cost ~$0.13 and added no
+                        signal that ci.yml did not already provide for free.
+        Job names now say what they prove, so the checks list is readable without
+        opening anything: "build & test <os> / node <v> / <backend>", "openssl
+        <v> headers", "format & shell", "real AWS KMS (spends money)". The
+        four-workflow table is in README.md under Continuous integration.
+
+        WHAT WAS AND WAS NOT EXTRACTED, having looked for repetition on purpose:
+          EXTRACTED  the supported-node floor -> .node-version, read by both
+            workflows via setup-node's node-version-file. Not cosmetic: the two
+            must move together, and bumping one while forgetting the other leaves
+            the MONEY workflow silently no longer testing the oldest supported
+            host. Also gives nvm/fnm the right version locally for free.
+          NOT EXTRACTED  the build sequence into a composite action. Only two call
+            sites and they genuinely differ -- backend hardcoded vs matrix, one
+            node vs two, macOS handling in ci.yml only. Three inputs' worth of
+            machinery to save ~5 lines, at the cost of hiding what "build" means
+            behind another file.
+          MUST NOT EXTRACT  the action SHA pins. Dependabot's github-actions
+            ecosystem with directory:"/" scans .github/workflows and the ROOT
+            action.yml -- NOT .github/actions/*/action.yml. Pins moved into a
+            composite action go stale SILENTLY, which is the exact failure the
+            pinning discipline exists to prevent. Doing the DRY thing here would
+            quietly break a security property.
 
 [ ] T4. Tier-2 release artifacts.
         Per-architecture tarballs on a `v*` tag, each containing the module, a

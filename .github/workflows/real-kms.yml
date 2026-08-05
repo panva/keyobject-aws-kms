@@ -25,11 +25,16 @@
 #
 # `types:` includes `labeled` so applying the label starts a run, and
 # `synchronize` so pushing to an already-labelled PR re-runs it.
+#
+# It deliberately does NOT run on push to main. The question this workflow
+# answers -- "does the provider still work against the actual service?" -- needs
+# answering periodically and on demand, not once per commit. The daily cron
+# covers periodic and the labelled PR covers on demand, so a per-push run would
+# add cost without adding signal. Everything that IS worth checking per commit is
+# free and lives in ci.yml.
 name: real-kms
 
 on:
-  push:
-    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened, labeled]
   schedule:
@@ -71,6 +76,7 @@ permissions: {}
 
 jobs:
   real-kms:
+    name: real AWS KMS (spends money)
     # Both gates, and both only apply to pull_request events: same repository (not
     # a fork), and the `real-kms` label. See the header for why the label cannot be
     # enforced on the AWS side.
@@ -99,7 +105,7 @@ jobs:
       # would convert a loud failure into a silent, billable no-op.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.7.0'
+          node-version-file: .node-version
 
       # Mandatory for the aws backend, not defensive:
       # S2N_ENFORCE_PROPER_LIBCRYPTO_FEATURE_PROBE=ON makes a libcrypto that cannot

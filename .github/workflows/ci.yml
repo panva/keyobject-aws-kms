@@ -56,7 +56,7 @@ jobs:
 
   build:
     needs: node-versions
-    name: ${{ matrix.os }} / node ${{ matrix.node-version }} / ${{ matrix.backend }}
+    name: build & test ${{ matrix.os }} / node ${{ matrix.node-version }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -81,7 +81,13 @@ jobs:
       # the floor -- the undefined-symbol audit is only as good as the oldest host
       # it runs against.
       #
-      # 26.7.0 is where the OSSL_STORE loader shipped, so it is the floor by
+      # The floor is read from .node-version rather than written here, because
+      # real-kms.yml needs the SAME value and the two must move together: bump one
+      # and forget the other, and the money workflow silently stops testing the
+      # oldest supported host while still looking correct. One file, two readers.
+      # It also gives nvm/fnm the right version locally for free.
+      #
+      # That version is where the OSSL_STORE loader shipped, so it is the floor by
       # definition. NOTE it was still an open release proposal when this was
       # written: neither nodejs.org nor the setup-node version manifest carried it
       # yet, so this step -- and therefore CI -- fails until the release lands.
@@ -89,7 +95,7 @@ jobs:
       # no released node this provider runs on before then.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.7.0'
+          node-version-file: .node-version
       - name: record the floor node
         run: echo "AWSKMS_FLOOR_NODE=$(command -v node)" >> "$GITHUB_ENV"
 
@@ -162,7 +168,7 @@ jobs:
           set -euo pipefail
           node test/run.mjs 2>&1 | tee /tmp/suite.log
           if grep -q 'Skipping the end-to-end suites' /tmp/suite.log; then
-            echo "::error::the suites silently skipped -- $(node -p process.version) lacks the OSSL_STORE loader (needs >= 26.7.0)"
+            echo "::error::the suites silently skipped -- $(node -p process.version) lacks the OSSL_STORE loader (needs >= $(cat .node-version))"
             exit 1
           fi
           grep -qE '^. pass [1-9]' /tmp/suite.log || {
@@ -227,6 +233,7 @@ jobs:
         run: scripts/check-openssl-matrix.sh "$HOME/.cache/awskms-openssl/${{ matrix.version }}/include"
 
   lint:
+    name: format & shell
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

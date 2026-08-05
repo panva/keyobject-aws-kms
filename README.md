@@ -242,6 +242,27 @@ node scripts/real-kms-keys.mjs setup --smoke --profile awskms-admin --dry-run
 Keys are created fresh per run and scheduled for deletion afterwards; deletion is
 never cancelled, which keeps a full pass at roughly `$0.73` rather than `$22`/month.
 
+## Continuous integration
+
+Four workflows, each answering one question. Only one of them costs anything.
+
+| workflow | answers | runs on | cost |
+| --- | --- | --- | --- |
+| [`ci.yml`](.github/workflows/ci.yml) | does it build, load and pass its tests — on Linux x64/arm64 and macOS arm64, against OpenSSL 3.0/3.5/4.0 headers, and is it formatted | every push and PR; the aws backend on the schedule and on demand | free |
+| [`real-kms.yml`](.github/workflows/real-kms.yml) | does it still work against the **actual** service | daily; a PR labelled `real-kms`; manual dispatch | ~`$0.13` a pass |
+| [`real-kms-reaper.yml`](.github/workflows/real-kms-reaper.yml) | did any run leave keys behind | daily; manual dispatch | free |
+| [`vendored.yml`](.github/workflows/vendored.yml) | is `third_party/` byte-identical to the release it claims, and is a newer one out | on changes to `third_party/`, `src/` or the updater; weekly | free |
+
+The division that matters: **`ci.yml` runs per commit, `real-kms.yml` does not.**
+"Does it still work against the real service" is a question worth answering
+periodically and on demand, not once per push — the daily run covers the first and
+the `real-kms` label covers the second. Everything worth checking per commit is
+free and lives in `ci.yml`.
+
+`ci.yml` builds the stub backend on pull requests and both backends on the
+schedule, because the aws backend fetches ~206 MB of aws-sdk-cpp. That fetch is
+cached, and the schedule is also what keeps the cache entry from being evicted.
+
 ## Hardening with the permission model
 
 Node gates STORE loaders behind `--allow-openssl-store`, so a key load needs it:
