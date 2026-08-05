@@ -16,13 +16,24 @@
 # is a proxy for the other.
 #
 # The aws backend is not built on every PR: it fetches ~206 MB of aws-sdk-cpp.
-# It runs on the schedule and on demand, which is also what keeps its cache warm --
-# GitHub evicts entries not accessed in 7 days, and nothing else here touches it.
+# It runs on the schedule, on demand, and on tags, which is also what keeps its
+# cache warm -- GitHub evicts entries not accessed in 7 days, and nothing else
+# here touches it.
+#
+# A `v*` tag runs exactly the same build and then publishes. Packaging is NOT
+# tag-only: the archives are built, unpacked and verified on every schedule and
+# dispatch, so the only thing a tag exercises for the first time is the publish
+# itself. A release path first executed while cutting a release is how this
+# repository has been bitten before.
 name: ci
 
 on:
   push:
     branches: [main]
+    # A `v*` tag additionally publishes; see the `release` job. Everything up to
+    # that point is the same build the schedule runs, so a tag exercises nothing
+    # that has not already been exercised.
+    tags: ['v*']
   pull_request:
   schedule:
     # Every 5 days rather than weekly, so the aws-sdk-cpp cache entry is refreshed
@@ -68,10 +79,11 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
         # The aws backend costs a ~206 MB SDK fetch, so it is reserved for the
-        # schedule and for manual runs. Including workflow_dispatch means the
+        # schedule, for manual runs, and for tags. workflow_dispatch means the
         # expensive legs are reachable on demand -- before a release, when
-        # touching cmake/, or simply to refresh the cache.
-        backend: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        # touching cmake/, or simply to refresh the cache. A TAG needs them
+        # because they are what produce the artifacts the release job publishes.
+        backend: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -88,11 +100,7 @@ jobs:
       # It also gives nvm/fnm the right version locally for free.
       #
       # That version is where the OSSL_STORE loader shipped, so it is the floor by
-      # definition. NOTE it was still an open release proposal when this was
-      # written: neither nodejs.org nor the setup-node version manifest carried it
-      # yet, so this step -- and therefore CI -- fails until the release lands.
-      # That is the correct behaviour rather than a bug to work around: there is
-      # no released node this provider runs on before then.
+      # definition -- there is no released node this provider runs on before it.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
@@ -341,3 +349,55 @@ jobs:
       # not express as readably.
       - name: shellcheck
         run: shellcheck -e SC2001 scripts/*.sh
+
+  # Publishing. Everything it ships was built, tested, packaged, unpacked and
+  # verified by the `build` job above -- this job only collects, checksums,
+  # attests and publishes. It is the ONLY part of the pipeline that a tag
+  # exercises for the first time, which is why the rest deliberately runs on
+  # every schedule and dispatch rather than waiting for one.
+  release:
+    name: publish the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write      # create the release
+      id-token: write      # OIDC, for the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      # A tag that produced no artifacts would otherwise publish an empty
+      # release, which is worse than failing.
+      - name: checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          ls -la
+          count=$(ls -1 awskms-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')
+          [ "$count" -gt 0 ] || { echo "::error::no artifacts to release"; exit 1; }
+          sha256sum awskms-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      # subject-checksums attests one subject per line, so every asset is
+      # individually verifiable and the SHA256SUMS that is published is the same
+      # file that drove the attestation.
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+      # Plain `gh` rather than a third-party release action: one fewer party in
+      # the trust path of the job that signs the artifacts. --verify-tag so a
+      # mistyped ref cannot create a release against a tag that does not exist.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            --title "$GITHUB_REF_NAME" \
+            dist/awskms-*.tar.gz dist/SHA256SUMS

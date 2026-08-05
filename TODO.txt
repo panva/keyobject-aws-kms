@@ -58,13 +58,40 @@ block the work items that name them
         an OpenSSL-3.0-headers problem. Confirm or override.
         Blocks: T4.
 
-[ ] Q5. What --openssl-config clobbering means for users.
-        Setting OPENSSL_CONF or --openssl-config REPLACES the host's OpenSSL
-        configuration wholesale for that process. Anyone who already has one --
-        FIPS policy, a corporate CA, a pkcs11 provider section -- silently loses
-        it. Either the shipped cnf carries an `.include` of the system config, or
-        the docs tell people to merge by hand. Not yet measured either way.
-        Blocks: the install instructions in T1 and the archive contents in T4.
+[x] Q5. ANSWERED BY MEASUREMENT 2026-08-05, not by decision. It was filed as a
+        judgement call and was not one -- the question was empirical.
+
+        SETUP: a stand-in "user's existing config" that activates the legacy
+        provider, so md4 is the observable (unavailable by default,
+        ERR_OSSL_EVP_UNSUPPORTED).
+
+          their config alone            md4 WORKS
+          ours alone                    md4 GONE, awskms working
+          theirs + .include ours        md4 works, AWSKMS NEVER LOADS
+          ours + .include theirs        awskms works, MD4 GONE
+          genuinely merged, one
+            providers section           BOTH work
+
+        TWO FINDINGS:
+        1. Replacement IS wholesale, as suspected. Setting --openssl-config or
+           OPENSSL_CONF loses whatever the host config was doing -- FIPS policy,
+           a corporate CA, a pkcs11 provider section.
+        2. `.include` DOES NOT COMPOSE, which is the part worth knowing. The
+           top-level nodejs_conf key names ONE section and the FIRST assignment
+           wins; the other file's providers are then silently never activated.
+           So the "ship a cnf that .includes the system one" idea does not work
+           and must not be documented -- it would produce a config that looks
+           right and silently drops half of itself.
+
+        CONSEQUENCE: the shipped cnf carries no .include. The docs must tell
+        people to MERGE -- one file, one providers section listing both -- and
+        that is the only arrangement measured to work.
+
+        KNOWN DIAGNOSTIC GAP, worth fixing if this bites anyone: in the
+        theirs-first case the doctor inspected the file named by
+        --openssl-config, found it entirely well-formed, and reported "ok module
+        exists" -- while a DIFFERENT config was actually in effect. It has no way
+        to see that the winning nodejs_conf came from somewhere else.
 
 
 [x] Q6. Real-AWS testing on a PR -- DONE 2026-08-05. Route chosen: add the
@@ -192,7 +219,10 @@ WORK
             drops are per-thread, so a new Worker starts from the original CLI
             grants unless 'worker' is dropped too.
 
-        Do not write the install section until Q1 and Q5 are settled.
+        Do not write the install section until Q1 is settled. Q5 is answered:
+        say that --openssl-config REPLACES the host config wholesale, and that
+        the fix is a genuine MERGE into one providers section -- NOT an
+        `.include`, which measurably does not compose.
 
         Not worth doing: nix/default.nix. check-openssl-matrix.sh discovers
         homebrew openssl@N kegs directly and only falls back to nix, so it no
@@ -404,9 +434,9 @@ WORK
 
         STILL TO DO for a real release: SHA256SUMS, build-provenance attestation,
         gh release create, darwin-x64 (deliberately absent from the CI matrix),
-        and docs/INSTALL.md. Blocked on Q1, Q3, Q4, Q5 -- though only Q3 (musl)
-        and Q4 (glibc floor) actually touch the artifact build; Q1 is tier 3 and
-        Q5 is INSTALL.md's wording.
+        and docs/INSTALL.md. Blocked on Q3 (musl) and Q4 (glibc floor), which decide the
+        matrix. Q1 is tier 3 only. Q5 is answered -- INSTALL.md can now say what
+        it needs to say about merging configs.
 
         TWO BUGS IN awskms-doctor.mjs THAT ONLY THE TARBALL PATH EXPOSED, both
         fixed, both mine:
