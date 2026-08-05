@@ -44,6 +44,7 @@
  *                       (default refs/heads/main)
  *   --dry-run           print every call, make none
  */
+import { spawnSync } from 'node:child_process';
 import { aws, awsTry, hasAwsCli } from './aws-cli.mjs';
 
 const ADMIN_ROLE = 'AwskmsTestAdmin';
@@ -187,19 +188,52 @@ const signerTrust = (acct) => ({
 });
 
 /*
+ * The subject prefix GitHub will actually put in the token, asked of GitHub
+ * rather than guessed.
+ *
+ * Repositories created after 2026-07-15 emit IMMUTABLE subjects, which embed
+ * owner and repository IDs:
+ *
+ *   classic     repo:owner/repo:ref:refs/heads/main
+ *   immutable   repo:owner@241506/repo@1323939733:ref:refs/heads/main
+ *
+ * Guessing this is how the first real run failed with "Not authorized to perform
+ * sts:AssumeRoleWithWebIdentity": the policy carried `repo:owner/repo*:ref:...`,
+ * whose wildcard sits after the REPO name and so cannot absorb the `@<id>` that
+ * follows the OWNER. GitHub reports the exact prefix, so ask it and use the
+ * answer verbatim -- no wildcard, nothing to get subtly wrong.
+ *
+ * The IDs are immutable, which is the point: this survives renaming the repo or
+ * the owner, where a name-based subject would silently stop matching.
+ */
+function githubSubPrefix(repo) {
+  const r = spawnSync('gh', ['api', `repos/${repo}/actions/oidc/customization/sub`,
+    '--jq', '.sub_claim_prefix'], { encoding: 'utf8' });
+  const prefix = r.status === 0 ? r.stdout.trim() : '';
+  if (prefix) return prefix;
+  /* No gh, not authenticated, or an older GitHub: fall back to the classic
+   * form. Say so, because a wrong guess here fails at assume-role time with an
+   * error that names none of this. */
+  console.log(`  WARNING: could not read the OIDC subject prefix from GitHub;`);
+  console.log(`           falling back to the classic form. If the workflow later`);
+  console.log(`           fails with "Not authorized to perform`);
+  console.log(`           sts:AssumeRoleWithWebIdentity", read the real prefix with`);
+  console.log(`             gh api repos/${repo}/actions/oidc/customization/sub`);
+  console.log(`           and re-run this.`);
+  return `repo:${repo}`;
+}
+
+/*
  * Admin trust: the caller themself (so the local pass works), plus optionally
  * GitHub OIDC.
  *
- * IAM requires the :sub condition to be present and not solely a wildcard. The
- * trailing * after the repo name absorbs the immutable-subject suffix that newer
- * repositories emit (repo:owner@<id>/repo@<id>:...). Read the sub from a failing
- * run and tighten it if a narrower match is wanted.
+ * IAM requires the :sub condition to be present and not solely a wildcard.
  *
  * TWO subjects are allowed, and the second one widens this role materially --
  * read this before regenerating the policy:
  *
- *   repo:<repo>*:ref:refs/heads/main   pushes, the schedule, workflow_dispatch
- *   repo:<repo>*:pull_request          a pull request
+ *   <prefix>:ref:refs/heads/main   pushes, the schedule, workflow_dispatch
+ *   <prefix>:pull_request          a pull request
  *
  * A pull_request event's subject carries no branch, so it cannot be narrowed
  * further here: the whole event type is either allowed or it is not. That means
@@ -230,12 +264,14 @@ const adminTrust = (acct, callerArn, repo, ref) => {
       Principal: { Federated: `arn:aws:iam::${acct}:oidc-provider/${OIDC_HOST}` },
       Action: 'sts:AssumeRoleWithWebIdentity',
       Condition: {
-        StringEquals: { [`${OIDC_HOST}:aud`]: 'sts.amazonaws.com' },
-        /* Multiple values for one condition key are OR-ed by IAM. */
-        StringLike: {
+        /* StringEquals, not StringLike: the prefix comes from GitHub verbatim,
+         * so there is nothing to wildcard. Multiple values for one condition key
+         * are OR-ed by IAM. */
+        StringEquals: {
+          [`${OIDC_HOST}:aud`]: 'sts.amazonaws.com',
           [`${OIDC_HOST}:sub`]: [
-            `repo:${repo}*:ref:${ref}`,
-            `repo:${repo}*:pull_request`,
+            `${githubSubPrefix(repo)}:ref:${ref}`,
+            `${githubSubPrefix(repo)}:pull_request`,
           ],
         },
       },

@@ -68,15 +68,32 @@ block the work items that name them
         now carries both subjects, for repo panva/tmp-tiny-aws-kms-openssl-provider,
         and the `real-kms` label exists.
 
-        THE SUBJECT IS BOUND TO THE REPOSITORY NAME. Renaming or moving the repo
-        breaks CI's ability to assume the role, and the failure gives no hint that
-        a rename caused it -- the workflow simply cannot assume. Given the current
-        name is a tmp- prefixed one, expect to re-run the bootstrap with the new
-        --github-repo when it moves.
+        THE FIRST REAL RUN FAILED, AND WAS RIGHT TO. workflow_dispatch on main,
+        2026-08-05: "Could not assume role with OIDC: Not authorized to perform
+        sts:AssumeRoleWithWebIdentity". No keys were created, so nothing was spent
+        or left behind, and everything before it -- the aws-backend build and
+        check-load -- passed, which is what that step ordering is for.
 
-        NOT YET EXERCISED. Both workflows pin node 26.7.0, which is unpublished,
-        so a labelled PR fails at setup-node before reaching AWS. The first green
-        run will also be the first real test of this gate.
+        CAUSE: the subject was GUESSED. Repositories created after 2026-07-15
+        emit IMMUTABLE subjects carrying owner and repo IDs:
+          classic     repo:owner/repo:ref:refs/heads/main
+          immutable   repo:owner@241506/repo@1323939733:ref:refs/heads/main
+        The policy had repo:owner/repo*:ref:..., whose wildcard sits after the
+        REPO name and so cannot absorb the @<id> that follows the OWNER. This is
+        exactly the case the docs had flagged as "unverified against a live
+        token" -- now verified, in the failing direction.
+
+        FIX: do not guess. GitHub reports the exact prefix:
+          gh api repos/OWNER/REPO/actions/oidc/customization/sub \
+            --jq .sub_claim_prefix
+        real-kms-bootstrap.mjs now reads it and uses it verbatim, so the
+        condition is StringEquals with NO wildcard at all. Re-run the bootstrap
+        to apply.
+
+        CORRECTION TO AN EARLIER NOTE HERE: renaming the repo does NOT break the
+        trust policy. The opposite -- immutable subjects are built from IDs
+        precisely so they survive a rename of the repository or the owner. It is
+        the NAME-based form that would silently stop matching.
 
         Already written:
           scripts/real-kms-bootstrap.mjs   emits both subjects

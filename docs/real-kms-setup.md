@@ -146,11 +146,13 @@ The admin role trusts GitHub OIDC:
     "Principal": { "Federated": "arn:aws:iam::111122223333:oidc-provider/token.actions.githubusercontent.com" },
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
-      "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-      "StringLike":   { "token.actions.githubusercontent.com:sub": [
-        "repo:ORG/tiny-aws-kms-openssl-provider*:ref:refs/heads/main",
-        "repo:ORG/tiny-aws-kms-openssl-provider*:pull_request"
-      ]}
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": [
+          "<PREFIX>:ref:refs/heads/main",
+          "<PREFIX>:pull_request"
+        ]
+      }
     }
   }]
 }
@@ -159,12 +161,38 @@ The admin role trusts GitHub OIDC:
 Multiple values for one condition key are OR-ed by IAM. The first covers pushes to
 `main`, the schedule and `workflow_dispatch`; the second covers a pull request.
 
+`<PREFIX>` is **not** something to guess. Ask GitHub:
+
+```bash
+gh api repos/OWNER/REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+```
+
+Repositories created after 2026-07-15 emit **immutable subjects**, which embed
+owner and repository IDs:
+
+```
+classic     repo:owner/repo:ref:refs/heads/main
+immutable   repo:owner@241506/repo@1323939733:ref:refs/heads/main
+```
+
+This is not academic — it is how the first real run failed, with `Not authorized to
+perform sts:AssumeRoleWithWebIdentity` and nothing naming the cause. The policy had
+`repo:owner/repo*:ref:...`, whose wildcard sits after the **repo** name and
+therefore cannot absorb the `@<id>` that follows the **owner**.
+
+`scripts/real-kms-bootstrap.mjs` reads the prefix from GitHub and uses it
+verbatim, which is why the condition is `StringEquals` with no wildcard at all.
+
+One good consequence: those IDs are immutable, so this trust policy **survives
+renaming the repository or the owner**. A name-based subject would silently stop
+matching.
+
 ### What the `pull_request` subject costs, precisely
 
 It widens this role, and the widening cannot be narrowed on the AWS side. A
-`pull_request` event's subject is `repo:ORG/REPO:pull_request` — it carries no
-branch and no label — so the trust policy either allows the entire event type or
-none of it.
+`pull_request` event's subject is `<PREFIX>:pull_request` — it carries no branch
+and no label — so the trust policy either allows the entire event type or none of
+it.
 
 What is left holding the line is entirely in
 [real-kms.yml](../.github/workflows/real-kms.yml):
@@ -196,10 +224,9 @@ Three constraints on that condition block:
   role creation otherwise fails with `MalformedPolicyDocument`.
 - `ForAllValues:` operators return true when the claim is absent or misspelled, so
   they are unsafe in an `Allow`.
-- The `*` after the repository name absorbs a possible immutable-subject suffix
-  (`repo:owner@<ownerId>/repo@<repoId>:...`) that newer repositories may emit. The
-  authoritative form is whatever `sub` a real token carries; this is unverified
-  against a live token.
+- There is no wildcard to get wrong, because the subject prefix is read from
+  GitHub rather than constructed. An earlier version guessed it and the first real
+  run failed at assume-role; see above.
 
 Adding `environment:` to the job changes `:sub` to `repo:ORG/REPO:environment:NAME`
 and invalidates the condition above.
