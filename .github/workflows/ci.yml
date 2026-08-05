@@ -157,8 +157,12 @@ jobs:
               extra+=(-DCMAKE_MODULE_LINKER_FLAGS="-static-libstdc++ -static-libgcc")
             fi
           fi
+          # ${extra[@]+"${extra[@]}"} rather than "${extra[@]}": macOS runners run
+          # /bin/bash 3.2, where expanding an EMPTY array under `set -u` is an
+          # "unbound variable" error. Linux has bash 5 and does not care, so this
+          # fails on exactly one leg of the matrix.
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DAWSKMS_BACKEND=${{ matrix.backend }} "${extra[@]}"
+            -DAWSKMS_BACKEND=${{ matrix.backend }} ${extra[@]+"${extra[@]}"}
 
       - name: build
         run: cmake --build build --parallel
