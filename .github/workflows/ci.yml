@@ -139,8 +139,26 @@ jobs:
           path: build/_deps/aws-sdk-cpp
           key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake') }}
 
+      # The aws legs carry the release flags, so what gets packaged below is what
+      # was just tested rather than a separate build nobody exercised.
+      #   deployment target  otherwise the dylib records the BUILD HOST's OS as
+      #                      its minimum, making the support floor an accident of
+      #                      the runner image
+      #   static libstdc++   so the artifact does not additionally require the
+      #                      builder's GCC runtime. Costs ~0.7 MB.
       - name: configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAWSKMS_BACKEND=${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ '${{ matrix.backend }}' = aws ]; then
+            if [ '${{ runner.os }}' = macOS ]; then
+              extra+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=13.5)
+            else
+              extra+=(-DCMAKE_MODULE_LINKER_FLAGS="-static-libstdc++ -static-libgcc")
+            fi
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DAWSKMS_BACKEND=${{ matrix.backend }} "${extra[@]}"
 
       - name: build
         run: cmake --build build --parallel
@@ -175,6 +193,56 @@ jobs:
             echo "::error::the suites reported no passing tests"
             exit 1
           }
+
+      # Packaging runs here, on the aws legs, rather than only in some future
+      # release workflow. A release path that fires only on a tag is first
+      # exercised while you are cutting a release, which is the worst moment to
+      # discover it does not work -- this repository has already been bitten by
+      # exactly that (real-kms.yml had never once run). Nothing is published; the
+      # tarball is a workflow artifact so the staging, the deployment target, the
+      # static libstdc++ and the relocatable cnf are all continuously exercised.
+      - name: stage the archive
+        if: matrix.backend == 'aws'
+        id: stage
+        run: |
+          set -euo pipefail
+          case "${{ matrix.os }}" in
+            macos-*)            target=darwin-arm64 ;;
+            ubuntu-24.04-arm)   target=linux-arm64  ;;
+            *)                  target=linux-x64    ;;
+          esac
+          dir="awskms-${target}"
+          mkdir -p "stage/$dir"
+          cp build/awskms.dylib "stage/$dir/" 2>/dev/null || cp build/awskms.so "stage/$dir/"
+          # The RELOCATABLE cnf, not build/awskms.cnf: that one bakes an absolute
+          # path into the build tree and would be wrong the moment it is unpacked
+          # anywhere else. This one resolves $ENV::AWSKMS_MODULE at load, and an
+          # UNSET variable is a loud fatal rather than a silent no-load.
+          cp build/awskms.relocatable.cnf "stage/$dir/awskms.cnf"
+          cp scripts/awskms-doctor.mjs LICENSE "stage/$dir/"
+          tar czf "$dir.tar.gz" -C stage "$dir"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          ls -la "$dir.tar.gz"
+
+      # Unpack it somewhere else entirely and prove it still works, which is the
+      # whole claim a relocatable archive makes.
+      - name: the unpacked archive works
+        if: matrix.backend == 'aws'
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/unpack"
+          mkdir -p "$d" && tar xzf "awskms-${{ steps.stage.outputs.target }}.tar.gz" -C "$d"
+          p="$d/awskms-${{ steps.stage.outputs.target }}"
+          mod="$p/awskms.dylib"; [ -f "$mod" ] || mod="$p/awskms.so"
+          AWSKMS_MODULE="$mod" node --openssl-config="$p/awskms.cnf" "$p/awskms-doctor.mjs"
+
+      - name: upload the archive
+        if: matrix.backend == 'aws'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: awskms-${{ steps.stage.outputs.target }}
+          path: awskms-${{ steps.stage.outputs.target }}.tar.gz
+          if-no-files-found: error
 
   openssl-headers:
     name: openssl ${{ matrix.version }} headers

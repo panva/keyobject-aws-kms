@@ -324,16 +324,47 @@ WORK
         relocatable cnf, the doctor, LICENSE and install notes; plus SHA256SUMS
         and build-provenance attestation.
 
-        Two pieces do not exist yet:
-          - the relocatable cnf. cmake/awskms.cnf.in bakes an absolute module
-            path at configure time, which cannot work for an archive the user
-            unpacks anywhere. Generate a second copy using
-            `module = $ENV::AWSKMS_MODULE`: OpenSSL expands $ENV:: inside
-            `module =`, and an UNSET variable is a loud fatal (node exits 104) --
-            the only misconfiguration in this area that is not silent. A
-            wrong-but-set path is still silent; the doctor narrows that.
-          - docs/INSTALL.md, referenced by the archive.
-        Blocked on Q1, Q3, Q4, Q5.
+        BUILDING IS DONE 2026-08-05; only PUBLISHING is left.
+
+        ci.yml's aws legs (cron and workflow_dispatch) now configure with the
+        release flags, stage a tarball, UNPACK IT SOMEWHERE ELSE AND RUN THE
+        DOCTOR AGAINST IT, and upload it as a workflow artifact. Nothing is
+        published.
+
+        Packaging lives there rather than in a future tag-only workflow on
+        purpose: a release path that fires only on a tag is first exercised while
+        you are cutting a release. This repository has already been bitten by
+        exactly that -- real-kms.yml had never once run -- so the staging, the
+        deployment-target pin, the static libstdc++ and the relocatable cnf are
+        all exercised continuously instead.
+
+        The relocatable cnf now exists: a third configure_file of
+        cmake/awskms.cnf.in with module = $ENV::AWSKMS_MODULE. Not installed --
+        it is an archive artifact, not something cmake --install should scatter
+        into /usr/local/etc. VERIFIED PERSONALLY in all three states, rather than
+        taken from a report: set -> loads; UNSET -> loud fatal at OpenSSL init,
+        node refuses to start; set-but-wrong -> silent no-load, caught by the
+        doctor, which prints the path it expanded to.
+
+        STILL TO DO for a real release: SHA256SUMS, build-provenance attestation,
+        gh release create, darwin-x64 (deliberately absent from the CI matrix),
+        and docs/INSTALL.md. Blocked on Q1, Q3, Q4, Q5 -- though only Q3 (musl)
+        and Q4 (glibc floor) actually touch the artifact build; Q1 is tier 3 and
+        Q5 is INSTALL.md's wording.
+
+        TWO BUGS IN awskms-doctor.mjs THAT ONLY THE TARBALL PATH EXPOSED, both
+        fixed, both mine:
+          The main-module guard compared import.meta.url against argv[1]. The ESM
+            loader resolves import.meta.url through SYMLINKS and argv[1] is left
+            as typed, so unpacking under /tmp on macOS -- where /tmp is a symlink
+            to /private/tmp -- made the guard false. The doctor printed NOTHING
+            and exited 0: a health check whose entire purpose is eliminating
+            silent failures, failing silently and reporting success. Now
+            import.meta.main, which is symlink-correct.
+          expandEnv() encoded unset variable names into its return string using a
+            sentinel that turned out to be literal NUL bytes, making the file
+            "binary" to grep and git diff -- which is how an unused import stayed
+            invisible. Now returns { expanded, unset } and the file is ASCII.
 
 [ ] T5. Tier-3 npm package.
         Core package plus one optional dependency per architecture, so a user

@@ -357,6 +357,29 @@ set(AWSKMS_CNF_FILE "${AWSKMS_INSTALL_CNF_DIR}/awskms.cnf")
 configure_file(cmake/awskms.cnf.in
   "${CMAKE_CURRENT_BINARY_DIR}/awskms.installed.cnf" @ONLY)
 
+# A third copy, for a RELOCATABLE archive: byte-identical on every platform,
+# because the module path is resolved from the environment at load rather than
+# baked in. The other two copies cannot serve: both hardcode an absolute path,
+# which is right for a build tree and for `cmake --install`, and impossible for a
+# tarball the user unpacks wherever they like.
+#
+# `$ENV::NAME` is expanded by OpenSSL's config parser, and passes through
+# configure_file untouched because CMake's own syntax is ${VAR} / $ENV{VAR}.
+# Measured in all three states:
+#   set correctly   the provider loads
+#   UNSET           a loud fatal at OpenSSL init -- node refuses to start with
+#                   "variable has no value". The only misconfiguration in this
+#                   area that is not silent.
+#   set but wrong   silent no-load, as any bad path is; scripts/awskms-doctor.mjs
+#                   catches it and prints the expansion it resolved to.
+#
+# Not installed: this is a release-archive artifact, not something `cmake
+# --install` should scatter into /usr/local/etc.
+set(AWSKMS_MODULE_FILE "$ENV::AWSKMS_MODULE")
+set(AWSKMS_CNF_FILE "/path/to/awskms.cnf")
+configure_file(cmake/awskms.cnf.in
+  "${CMAKE_CURRENT_BINARY_DIR}/awskms.relocatable.cnf" @ONLY)
+
 install(TARGETS awskms LIBRARY DESTINATION "${AWSKMS_INSTALL_MODULE_DIR}")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/awskms.installed.cnf"
   DESTINATION "${AWSKMS_INSTALL_CNF_DIR}" RENAME awskms.cnf)
