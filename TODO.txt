@@ -8,6 +8,11 @@ Signing is DONE for every key spec in scope and verified against real AWS KMS.
 398 aws-backend tests, 374 offline, 219 C unit checks, clean against OpenSSL
 3.0.21 / 3.5.7 / 3.6.3 / 4.0.1, on macOS-arm64 and Linux-arm64.
 
+CI is live and green as of 2026-08-05, on real runners rather than only locally:
+ci.yml across ubuntu-latest / ubuntu-24.04-arm / macos-latest, and real-kms.yml
+against the actual service (208 passing, 0 keys left billable). Requires Node
+>= 26.7.0, which published that day; the floor lives in .node-version.
+
 THIS FILE IS ONLY WHAT IS LEFT. Why things are the way they are -- decisions,
 measurements, dead ends already paid for -- is in docs/journal.md. The three-tier
 distribution plan is in docs/distribution.md. Each item below stands on its own;
@@ -87,8 +92,21 @@ block the work items that name them
           gh api repos/OWNER/REPO/actions/oidc/customization/sub \
             --jq .sub_claim_prefix
         real-kms-bootstrap.mjs now reads it and uses it verbatim, so the
-        condition is StringEquals with NO wildcard at all. Re-run the bootstrap
-        to apply.
+        condition is StringEquals with NO wildcard at all.
+
+        APPLIED AND VERIFIED GREEN 2026-08-05, workflow_dispatch on main:
+          assume-role succeeded
+          212 tests, 208 pass, 0 fail, 4 skipped (the stub-request-log
+            assertions, which only apply offline -- correct)
+          ML-DSA signed and verified against real KMS on ubuntu, ~1s/op
+          teardown: 0 key(s) currently billable, all 8 smoke aliases absent
+        That is the first time this job has ever run: before today it built the
+        stub backend and run.mjs refused it with exit 2.
+
+        A USEFUL CONFIRMATION FROM THE OTHER DIRECTION: the same runner, same
+        distro, same OpenSSL 3.0 headers that make the STUB skip ML-DSA signs
+        ML-DSA fine against real KMS. The aws backend never signs locally, so the
+        header floor that limits the test fake does not touch the real path.
 
         CORRECTION TO AN EARLIER NOTE HERE: renaming the repo does NOT break the
         trust policy. The opposite -- immutable subjects are built from IDs
@@ -217,11 +235,12 @@ WORK
         banner and fails. Tested both directions: exit 1 on node v24, exit 0
         with 374 passing on a 26.7-class build.
 
-        NOTE CI IS RED UNTIL NODE 26.7.0 IS PUBLISHED. At the time of writing the
-        release proposal (nodejs/node#65027) was still open: nodejs.org/dist has
-        no v26.7.0 and the setup-node manifest tops out at 26.6.0. That is
-        correct rather than broken -- no released node runs this provider before
-        then -- but it is the expected initial state.
+        VERIFIED GREEN ON REAL RUNNERS 2026-08-05, not just locally. Node 26.7.0
+        published the same day, so the floor pin resolves. The floor is single-
+        sourced in .node-version and read by both workflows via setup-node's
+        node-version-file, because the two must move together and bumping one
+        while forgetting the other leaves the MONEY workflow no longer testing
+        the oldest supported host.
 
         .clang-format: ~267 lines reformatted across src/ and test/unit_*, with
         most files already byte-identical. ReflowComments:false is load-bearing;
