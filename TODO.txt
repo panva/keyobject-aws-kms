@@ -462,23 +462,6 @@ WORK
         token-authenticated publish by hand before OIDC takes over.
         Blocked on Q1 and Q2.
 
-[ ] F1. Report the OpenSSL 4.0.1 ML-DSA-MU crash upstream.
-        Self-contained and ready to file; nothing here depends on it.
-
-        EVP_MD "ML-DSA-MU" segfaults whenever the total message length is zero,
-        both with no EVP_DigestUpdate at all and with an explicit zero-length
-        one. The boundary is exact: len 0 -> SIGSEGV, len 1 and 2 -> rc=1. Not
-        generic to XOFs -- plain SHAKE256 finalises a zero-length message fine.
-        Confirmed on two independent 4.0.1 builds (nix and homebrew), so it is
-        upstream rather than a packaging artifact. Signing an empty message is
-        legitimate under FIPS 204, so this is a crash on valid input. The repro
-        is about 20 lines: fetch ML-DSA-MU, set the mandatory "pub" octet-string
-        param on EVP_DigestInit_ex2, finalise with EVP_DigestFinalXOF.
-
-        Does not affect this provider: the production path computes mu with
-        SHAKE256 directly and handles an empty message correctly. Only the
-        unit-test oracle comparison skips that one case.
-
 
 LATER MILESTONES (explicitly out of scope for now)
 --------------------------------------------------
