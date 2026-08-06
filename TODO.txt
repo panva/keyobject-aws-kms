@@ -601,7 +601,42 @@ WORK
         worth having: a shared-libcrypto host is a code path nothing here has
         ever taken.
 
-        NOT VERIFIED ON A RUNNER. Four of the glibc legs had never executed
+        FIRST RUNNER RESULTS (run 31075642765). Four of five builds green,
+        both musl builds green, test-musl reached and running -- so the split,
+        the OpenSSL floor and the musl phases all work on real runners.
+        macos-15-intel FAILED, and the cause is worth keeping:
+
+          awskms_unit failed to LINK with "Undefined symbols for architecture
+          x86_64: _EVP_PKEY_sign_message_init, referenced from _awskms_kms_sign
+          in kms_stub.c.o". The module itself linked fine -- it uses
+          -undefined dynamic_lookup -- so only the ordinary executable noticed.
+
+          cmake had FOUND 3.0.21 and said so, printing the "cannot sign ML-DSA
+          below 3.5" warning on both macOS legs. But on Intel the PREPROCESSOR
+          resolved <openssl/evp.h> to a 3.5+ tree: /usr/local/include is a
+          default clang search path there, while arm64 homebrew lives at
+          /opt/homebrew, which is not. So the probed version and the compiled
+          reality disagreed -- the same shape as B4, one layer up.
+
+          FIXED by making cmake authoritative: AWSKMS_MLDSA_API is passed as a
+          compile definition and src/kms_stub.c uses it instead of rederiving
+          from OPENSSL_VERSION_NUMBER. Verified locally both ways -- 3.0 headers
+          build and link with ML-DSA out and the marker "no"; 3.5 headers build
+          with it in and the marker "yes".
+
+          Note this narrows the divergence rather than eliminating it: on Intel
+          the compiler may still see newer headers for other declarations. The
+          check-symbol-floor step is the net for that, and it runs on every
+          build.
+
+        A CONSEQUENCE OF THE SPLIT worth knowing: `needs: build` is satisfied
+        only when EVERY matrix leg succeeds, so one platform failing to build
+        skipped `test` and `openssl-runtime` entirely. fail-fast: false keeps the
+        other builds running but does not make the dependents run. That is
+        standard GitHub behaviour with no per-leg `needs`, but it means a single
+        broken platform now blocks all downstream signal.
+
+        STILL NOT VERIFIED ON A RUNNER: test, openssl-runtime, real-kms gating. Four of the glibc legs had never executed
         even before this change, and the whole build/test split is new. Local
         rehearsal covers the musl path only.
 

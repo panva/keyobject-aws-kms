@@ -274,7 +274,10 @@ int awskms_kms_sign(AWSKMS_PROV_CTX *provctx, const AWSKMS_URI *uri,
    * it; the aws backend, which is what ships, does not.)
    */
   if (strcmp(message_type, "EXTERNAL_MU") == 0) {
-#if OPENSSL_VERSION_NUMBER >= 0x30500000L
+/* AWSKMS_MLDSA_API, not OPENSSL_VERSION_NUMBER: cmake passes what it actually
+   FOUND, which is not always what the preprocessor resolves <openssl/evp.h> to.
+   See the long note beside the definition in CMakeLists.txt. */
+#if AWSKMS_MLDSA_API
     EVP_SIGNATURE *alg = NULL;
     int one = 1;
     OSSL_PARAM params[2];

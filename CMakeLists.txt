@@ -337,6 +337,28 @@ file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/awskms-backend" "${AWSKMS_BACKEND}\n")
 # bundled OpenSSL 3.5 can generate ML-DSA keys perfectly well, so the tests'
 # runtime probe says ML-DSA is available -- while the stub they are signing
 # against was built on a distro shipping 3.0 headers and cannot sign it. The
+# Whether the ML-DSA signing API exists AT ALL in the headers being compiled
+# against. Separate from the marker below, which additionally asks whether the
+# STUB is the backend; this one is a pure API-availability fact and is what the
+# preprocessor must be told.
+#
+# It is passed as a compile definition rather than left to src/kms_stub.c
+# rederiving it from OPENSSL_VERSION_NUMBER, because those two can DISAGREE. On
+# an Intel macOS runner /usr/local/include is a default clang search path (on
+# arm64 homebrew lives at /opt/homebrew, which is not), so cmake probed 3.0.21
+# and reported it while the preprocessor resolved <openssl/evp.h> to a 3.5+ tree
+# -- compiling in a call to EVP_PKEY_sign_message_init that the 3.0 libcrypto it
+# then linked against does not export. awskms_unit failed to link on exactly one
+# leg of the matrix. One source of truth: whatever cmake FOUND is what the code
+# is told, so a mismatch becomes a link error against the same header set rather
+# than a silent divergence.
+if(_awskms_ssl_header_version VERSION_LESS 3.5)
+  set(_awskms_mldsa_api 0)
+else()
+  set(_awskms_mldsa_api 1)
+endif()
+target_compile_definitions(awskms PRIVATE AWSKMS_MLDSA_API=${_awskms_mldsa_api})
+
 # tests read this marker so they skip on the build-time fact rather than the
 # runtime one. Only the stub is affected; the real backend never signs locally,
 # and computes mu with SHAKE256, which is 3.0-era.
@@ -410,6 +432,7 @@ if(BUILD_TESTING AND TARGET OpenSSL::Crypto)
     src/kms_stub.c
     $<TARGET_OBJECTS:awskms_ada>)
   target_include_directories(awskms_unit PRIVATE src third_party/ada)
+  target_compile_definitions(awskms_unit PRIVATE AWSKMS_MLDSA_API=${_awskms_mldsa_api})
   target_link_libraries(awskms_unit PRIVATE OpenSSL::Crypto)
   target_compile_definitions(awskms_unit PRIVATE
     AWSKMS_VERSION="${PROJECT_VERSION}"
