@@ -633,6 +633,7 @@ jobs:
     # lands. Enumerate the events that may spend instead.
     if: >-
       github.event.schedule == '17 4 * * *' ||
+      startsWith(github.ref, 'refs/tags/v') ||
       (github.event_name == 'workflow_dispatch' && inputs.real_kms) || (
         github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
@@ -978,10 +979,15 @@ jobs:
     # not gating is worse than not having it: it produces a green tick beside a
     # broken release.
     #
-    # real-kms is deliberately NOT here, and not by oversight. It is skipped on a
-    # tag push (the allow-list admits only the daily cron, dispatch and a
-    # label), and a skipped `needs` skips the dependent -- listing it would block
-    # every release outright.
+    # real-kms IS here, and that required making a tag arm it. Without that a
+    # `v*` tag published bytes that had never touched the real service -- the
+    # precise pattern this file's header warns about, a path first exercised
+    # while cutting a release. It costs ~$0.13 and 8 keys per release, which is
+    # nothing against publishing a provider that cannot sign.
+    #
+    # This only became worth gating on once real-kms started consuming the
+    # SHIPPED artifact rather than a look-alike rebuild; before that it proved
+    # something about a different binary.
     needs:
       - build
       - build-musl
@@ -991,6 +997,7 @@ jobs:
       - openssl-runtime-musl
       - openssl-headers
       - lint
+      - real-kms
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
