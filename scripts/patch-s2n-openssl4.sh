@@ -50,8 +50,17 @@ if [ -f "$MARKER" ]; then
   exit 0
 fi
 
-files=$(grep -rl 'ASN1_STRING_data([^)]' "$S2N" --include='*.c' --include='*.h' 2>/dev/null || true)
-count=$(grep -rho 'ASN1_STRING_data([^)]' "$S2N" --include='*.c' --include='*.h' 2>/dev/null | wc -l | tr -d ' ')
+# `find | xargs grep` rather than `grep -r --include`: --include is GNU-only and
+# busybox grep, which is what Alpine ships, exits 2 on the unknown option. Under
+# `set -euo pipefail` that killed this script with rc=2 and -- because stderr was
+# being discarded -- printed nothing at all, on the musl legs only. stderr is no
+# longer swallowed for the same reason.
+sources=$(find "$S2N" \( -name '*.c' -o -name '*.h' \) -type f)
+files=$(printf '%s\n' "$sources" | xargs grep -l 'ASN1_STRING_data([^)]' || true)
+# `|| true` inside the group, not after wc: grep exits 1 when it finds NOTHING,
+# and under pipefail that would kill the script -- destroying the very
+# upstream-has-fixed-it path this count exists to detect.
+count=$( { printf '%s\n' "$sources" | xargs grep -ho 'ASN1_STRING_data([^)]' || true; } | wc -l | tr -d ' ')
 
 if [ "$count" = 0 ]; then
   echo "::error::vendored s2n no longer calls ASN1_STRING_data -- upstream has" \
