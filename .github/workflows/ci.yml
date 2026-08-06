@@ -37,7 +37,9 @@ on:
   pull_request:
     # `labeled` is what arms the real-kms job below. The other three are the
     # defaults, which are lost the moment `types:` is written out at all.
-    types: [opened, synchronize, reopened, labeled]
+    # ready_for_review matters because of the `gate` job: a draft runs nothing,
+    # so without this, marking it ready would never start CI.
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
   schedule:
     # Every 5 days rather than weekly, so the aws-sdk-cpp cache entry is refreshed
     # inside GitHub's 7-day eviction window rather than exactly on it.
@@ -98,12 +100,38 @@ concurrency:
 # in real-kms.yml for why a mutable tag is a live compromise path there.
 
 jobs:
+  # ONE condition, rather than the same `if:` copied onto eleven jobs where it
+  # would inevitably drift.
+  #
+  # Only the ROOT jobs name it. A skipped `needs` skips the dependent, and that
+  # propagates transitively -- `test` needs `build`, `build` needs this, so
+  # skipping this skips `test` without `test` saying so. Naming it everywhere
+  # would be noise that reads like an extra guarantee and is not one. The same
+  # applies to any future workflow-wide gate.
+  #
+  # Draft pull requests do not run CI. A draft is work in progress; spending
+  # runner time and the aws-sdk-cpp cache on every push to one is waste, and the
+  # red ticks are noise rather than signal. Marking the PR ready fires
+  # `ready_for_review`, which is in the trigger list below, so CI starts then.
+  #
+  # Non-pull_request events -- push, tags, schedule, dispatch -- have no
+  # `draft` field at all, so the first clause admits them unconditionally.
+  gate:
+    name: not a draft
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "not a draft; the rest of the workflow may run"
+
   node-versions:
+    needs: gate
     uses: panva/.github/.github/workflows/node-versions.yml@main
     with:
       min: 26
 
   build:
+    needs: gate
     name: build ${{ matrix.platform.os }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.platform.os }}
     timeout-minutes: 30
@@ -479,6 +507,7 @@ jobs:
   # runner is unable to host actions in on arm64. Folding that into `build` meant
   # an `if:` on nearly every step. The long version is in scripts/ci-alpine.sh.
   build-musl:
+    needs: gate
     name: build & test alpine ${{ matrix.platform.arch }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.platform.os }}
     timeout-minutes: 30
@@ -768,6 +797,7 @@ jobs:
         run: node scripts/real-kms-keys.mjs status $SUBSET
 
   openssl-headers:
+    needs: gate
     name: openssl ${{ matrix.version }} headers
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -937,6 +967,7 @@ jobs:
             ./scripts/ci-alpine.sh ossl '${{ matrix.backend }}' x64 '${{ matrix.version }}'
 
   lint:
+    needs: gate
     name: format & shell
     runs-on: ubuntu-latest
     timeout-minutes: 10

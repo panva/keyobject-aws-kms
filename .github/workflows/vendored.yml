@@ -128,9 +128,11 @@ jobs:
           is derived state: do not commit onto it, and expect history to be
           rewritten.
 
-          **CI does not run on this PR automatically.** Pull requests opened with
-          `GITHUB_TOKEN` do not trigger `pull_request` workflows. Close and
-          reopen it to run CI.
+          **Mark this ready for review to run CI.** It is opened as a draft, and
+          drafts do not run CI in this repository. That also works around a
+          GitHub rule: a PR opened with `GITHUB_TOKEN` never triggers
+          `pull_request` workflows, but marking a draft ready is your action, not
+          the token's, so CI starts then.
 
           An `aws-sdk-cpp` bump moves vendored s2n, and
           `scripts/patch-s2n-openssl4.sh` asserts an exact `ASN1_STRING_data`
@@ -140,6 +142,11 @@ jobs:
           # The heredoc body is indented for YAML's sake, so strip that indent
           # before it becomes the PR description.
           sed -i 's/^          //' /tmp/pr-body.md
-          gh pr create --base main --head deps/bump \
+          # --draft, per project policy that drafts do not run CI. It also
+          # happens to solve the GITHUB_TOKEN problem: a PR opened by the token
+          # never triggers `pull_request` workflows, but marking a draft ready is
+          # a HUMAN action, and `ready_for_review` is in ci.yml's trigger list.
+          # So the review step and the CI trigger become the same gesture.
+          gh pr create --draft --base main --head deps/bump \
             --title 'build: bump pinned dependencies' \
             --body-file /tmp/pr-body.md

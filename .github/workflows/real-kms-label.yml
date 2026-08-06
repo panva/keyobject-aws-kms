@@ -39,8 +39,15 @@ jobs:
     # `pull-requests: write` cannot be granted and the API call would 403 on
     # every fork label. real-kms does not run on forks either, so there is
     # nothing to disarm there.
+    # The draft check is not symmetry with ci.yml -- it fixes a way the label
+    # silently does nothing. ci.yml skips draft pull requests entirely, so
+    # labelling a draft arms no real-kms run; if this removed the label anyway,
+    # the press would be consumed with nothing to show for it and the obvious
+    # next move (label it again) would fail the same way. Left in place, the
+    # label persists as a stated intent until the PR is ready.
     if: >-
       github.event.label.name == 'real-kms' &&
+      github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
