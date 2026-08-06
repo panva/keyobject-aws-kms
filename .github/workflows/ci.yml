@@ -150,7 +150,7 @@ jobs:
         # expensive legs are reachable on demand -- before a release, when
         # touching cmake/, or simply to refresh the cache. A TAG needs them
         # because they are what produce the artifacts the release job publishes.
-        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event.schedule == '17 4 * * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || (github.event.action == 'labeled' && github.event.label.name == 'real-kms')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -393,7 +393,7 @@ jobs:
           - os: macos-latest
           - os: macos-15-intel
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
-        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event.schedule == '17 4 * * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || (github.event.action == 'labeled' && github.event.label.name == 'real-kms')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -493,7 +493,7 @@ jobs:
             arch: x64
           - os: ubuntu-24.04-arm
             arch: arm64
-        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event.schedule == '17 4 * * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || (github.event.action == 'labeled' && github.event.label.name == 'real-kms')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -579,7 +579,7 @@ jobs:
           - os: ubuntu-24.04-arm
             arch: arm64
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
-        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event.schedule == '17 4 * * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || (github.event.action == 'labeled' && github.event.label.name == 'real-kms')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -639,6 +639,10 @@ jobs:
         github.event.action == 'labeled' &&
         github.event.label.name == 'real-kms'
       )
+    # Consumes the ubuntu-latest aws artifact, so it must wait for it. Every
+    # event that can arm this job also puts `aws` in the backend matrix -- see
+    # the backend expression on `build` -- so the artifact is always there.
+    needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # The SAME group as real-kms-reaper.yml, so the reaper can never sweep keys a
@@ -668,49 +672,31 @@ jobs:
         with:
           node-version-file: .node-version
 
-      # Mandatory for the aws backend, not defensive:
-      # S2N_ENFORCE_PROPER_LIBCRYPTO_FEATURE_PROBE=ON makes a libcrypto that
-      # cannot be linked at configure time a fatal error rather than a silently
-      # degraded s2n.
-      - name: install the build prerequisites
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev
-
-      - name: cache the floor openssl
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # THE ARTIFACT THAT SHIPS, downloaded rather than rebuilt. This job used
+      # to compile its own copy, which meant the bytes we publish had never once
+      # touched the real service -- and B4 and B5 both proved that build
+      # provenance is exactly where this project's defects live: identical
+      # source, different bytes, depending on what the build host happened to
+      # have installed. Testing a look-alike build against real KMS answers a
+      # question nobody asked.
+      #
+      # It also deletes ~200 lines of work from the money path: no libssl-dev, no
+      # OpenSSL floor build, no 206 MB SDK fetch, no compile. The job now starts
+      # spending within a minute instead of ten.
+      - name: download the module that ships
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          path: ~/.cache/awskms-openssl/${{ env.AWSKMS_OPENSSL_FLOOR }}
-          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
+          name: module-ubuntu-latest-aws
+          path: build
 
-      - name: build the floor openssl
-        run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
-
-      - name: cache the aws sdk source
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: build/_deps/aws-sdk-cpp
-          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake') }}
-
-      # -DAWSKMS_BACKEND=aws is required. The default is `stub`, which contains no
-      # AWS client at all, and test/run.mjs refuses AWSKMS_TEST_REAL=1 against it
-      # with exit 2 -- the bug that meant this job had never worked.
-      - name: build the provider
-        run: |
-          set -euo pipefail
-          # See the note in the build job: s2n honours CMAKE_PREFIX_PATH, not
-          # OPENSSL_ROOT_DIR, and this job builds the aws backend.
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAWSKMS_BACKEND=aws \
-            -DOPENSSL_ROOT_DIR="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR" \
-            -DCMAKE_PREFIX_PATH="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
-          cmake --build build --parallel
-
-      # Before spending money. A module that fails to load or leaks libcrypto is
-      # worth catching ahead of key creation, not after.
+      # Before spending money. A module that fails to load is worth catching
+      # ahead of key creation, not after.
+      #
+      # No check-symbol-floor here: the job that BUILT this artifact already
+      # asserted it against the floor, and re-asserting would need an OpenSSL 3.0
+      # prefix built solely to repeat a passed check.
       - name: verify the module loads
-        run: |
-          set -euo pipefail
-          scripts/check-symbol-floor.sh build/awskms.so \
-            "$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
-          scripts/check-load.sh build "$(command -v node)"
+        run: scripts/check-load.sh build "$(command -v node)"
 
       - name: assume the provisioner role
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -839,7 +825,7 @@ jobs:
       fail-fast: false
       matrix:
         version: ['3.0.21', '3.5.7', '4.0.1']
-        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event.schedule == '17 4 * * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || (github.event.action == 'labeled' && github.event.label.name == 'real-kms')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -921,7 +907,7 @@ jobs:
       fail-fast: false
       matrix:
         version: ['3.0.21', '3.5.7', '4.0.1']
-        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event.schedule == '17 4 * * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || (github.event.action == 'labeled' && github.event.label.name == 'real-kms')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
