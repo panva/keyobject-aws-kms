@@ -4,6 +4,7 @@
 #
 #   scripts/ci-alpine.sh build <backend> <arch> <openssl-floor>
 #   scripts/ci-alpine.sh test  <backend> <arch> <node-spec>
+#   scripts/ci-alpine.sh ossl  <backend> <arch> <openssl-version>
 #
 # Two phases, for the same reason the glibc legs are two jobs: compiling does not
 # depend on the node version, so building once per node version would produce N
@@ -235,8 +236,51 @@ test)
   scripts/npm-pack.sh build
   ;;
 
+ossl)
+  # The musl half of openssl-runtime. NOT covered by the glibc lane: the musl
+  # module is a different binary from a different toolchain and its required
+  # symbol set genuinely differs -- measured 225 against glibc's 226 on the aws
+  # backend -- so "the glibc artifact loads on 4.0" says nothing about this one.
+  # The build phase already asserts the 3.0 FLOOR statically; this is the half
+  # that actually loads the module into each version.
+  V=$ARG
+  [ -f build/awskms.so ] || {
+    echo "::error::no build/awskms.so -- the build artifact did not arrive"
+    exit 1
+  }
+
+  say "node"
+  install_node "$(cat .node-version)"
+
+  say "openssl $V"
+  PREFIX="$PWD/.ossl/$V"
+  scripts/build-openssl.sh "$V" "$PREFIX"
+
+  say "does it load against openssl $V"
+  # Static first, so a failure names the missing symbols rather than only
+  # reporting that dlopen failed.
+  scripts/check-symbol-floor.sh build/awskms.so "$PREFIX"
+
+  PATH="$PREFIX/bin:$PATH"
+  LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export PATH LD_LIBRARY_PATH
+  # ASSERT the LIBRARY version, not the binary's. Alpine ships its own
+  # libcrypto.so.3, whose SONAME matches 3.0 and 3.5, so without this the CLI
+  # silently loads the system one and the lane grades the wrong OpenSSL while
+  # reporting a pass. That is exactly what happened on the glibc lane.
+  out=$(openssl version)
+  lib=$(printf '%s' "$out" | sed -n 's/.*(Library: OpenSSL \([0-9][0-9.]*\).*/\1/p')
+  got=${lib:-$(printf '%s' "$out" | awk '{print $2}')}
+  echo "openssl: $out"
+  [ "$got" = "$V" ] || {
+    echo "::error::the libcrypto in use is $got, not $V -- this leg would have graded the wrong OpenSSL"
+    exit 1
+  }
+  scripts/check-load.sh build "$(command -v node)"
+  ;;
+
 *)
-  echo "unknown phase '$PHASE' -- expected build or test" >&2
+  echo "unknown phase '$PHASE' -- expected build, test or ossl" >&2
   exit 2
   ;;
 esac

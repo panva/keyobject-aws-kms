@@ -360,6 +360,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: module-${{ matrix.platform.os }}-${{ matrix.backend }}
+          # Intra-run plumbing, consumed by `test` minutes later and useless
+          # after. The 90-day default kept 12 of these per dispatch run -- more
+          # artifacts than the 6 that are actually deliverables, and enough noise
+          # to bury them in the UI. 1 is the minimum GitHub accepts.
+          retention-days: 1
           path: |
             build/awskms.dylib
             build/awskms.so
@@ -542,6 +547,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: module-musl-${{ matrix.platform.arch }}-${{ matrix.backend }}
+          retention-days: 1   # intra-run only; see the note in `build`
           path: |
             build/awskms.so
             build/awskms.cnf
@@ -748,10 +754,24 @@ jobs:
       # would skip teardown in the case that matters most. A cancelled run gets
       # about five minutes before jobs are forcibly terminated, ample for 22
       # DescribeKey + ScheduleKeyDeletion pairs.
+      # NO --sweep. This tears down only the keys THIS RUN created; the daily
+      # reaper does the tag sweep for orphans (`reap`, same 7-day window).
+      #
+      # The reason is the cancellation path, which is the one that matters. A
+      # cancelled run gets roughly five minutes before jobs are forcibly
+      # terminated, and the sweep is unbounded work -- it walks every key
+      # carrying the test tag and issues a DescribeKey/ScheduleKeyDeletion pair
+      # for each. Measured on run 31077332081: 8 manifest keys against 87 swept,
+      # so the sweep was over 90% of the work and none of it was this run's.
+      # Spending the scarce cancellation budget on other runs' orphans is exactly
+      # backwards -- it risks leaving OUR keys behind to clean up someone else's.
+      #
+      # Nothing is lost: an orphan the reaper would have caught, it still catches,
+      # within a day and with no time pressure at all.
       - name: schedule the keys for deletion
         if: always()
         timeout-minutes: 5
-        run: node scripts/real-kms-keys.mjs teardown --window 7 --sweep $SUBSET
+        run: node scripts/real-kms-keys.mjs teardown --window 7 $SUBSET
 
       # Surfaces leaks immediately rather than on next month's bill. Runs even if
       # teardown failed, and never fails the job itself.
@@ -885,6 +905,49 @@ jobs:
             exit 1
           }
           scripts/check-load.sh build "$(command -v node)"
+
+  # The musl half of openssl-runtime. Needed for the same reason test-musl is:
+  # the musl module is a DIFFERENT binary from a different toolchain, and its
+  # required symbol set genuinely differs -- measured 225 against glibc's 226 on
+  # the aws backend -- so the glibc lane proves nothing about this artifact.
+  # Separate job for the usual container reason: no JavaScript actions in an
+  # Alpine container on arm64.
+  openssl-runtime-musl:
+    needs: build-musl
+    name: openssl ${{ matrix.version }} runtime musl / ${{ matrix.backend }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.0.21', '3.5.7', '4.0.1']
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # x64 only, matching the glibc lane. This asks a symbol question, and the
+      # arm64 musl artifact's floor is already asserted by its own build phase;
+      # a second architecture would triple the OpenSSL builds for little more.
+      - name: download the module
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: module-musl-x64-${{ matrix.backend }}
+          path: build
+
+      - name: cache the openssl prefix (musl)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ossl/${{ matrix.version }}
+          key: openssl-musl-x64-${{ matrix.version }}
+
+      - name: load it against openssl ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
+            alpine:3.24 \
+            ./scripts/ci-alpine.sh ossl '${{ matrix.backend }}' x64 '${{ matrix.version }}'
 
   lint:
     name: format & shell
