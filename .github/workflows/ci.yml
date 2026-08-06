@@ -845,7 +845,30 @@ jobs:
           # of the runner's own openssl on PATH; check-load.sh's probe resolves
           # `openssl` from PATH and asserts the provider reports itself active.
           export PATH="$prefix/bin:$PATH"
-          openssl version
+          # The CLI has to find its OWN libcrypto/libssl. Without this, 4.0 dies
+          # outright ("libssl.so.4: cannot open shared object file") and -- far
+          # worse -- 3.0 and 3.5 SILENTLY LOAD THE SYSTEM libcrypto.so.3, whose
+          # SONAME matches, so the leg passes while testing the runner's OpenSSL
+          # rather than the one under test.
+          export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          export DYLD_LIBRARY_PATH="$prefix/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+          # ASSERT the version rather than printing it. That silent fallback is
+          # exactly the failure this job exists to catch, so a runtime lane that
+          # cannot prove which runtime it used is worth nothing.
+          # The LIBRARY version, not the binary's. When the CLI loads a
+          # different libcrypto than it was built from, `openssl version` prints
+          # e.g. "OpenSSL 3.0.21 ... (Library: OpenSSL 3.0.13 ...)" -- and the
+          # binary version alone would happily assert 3.0.21 while the whole
+          # check ran against the runner's 3.0.13. Measured: that is exactly
+          # what this leg did before LD_LIBRARY_PATH was set.
+          out=$(openssl version)
+          lib=$(printf '%s' "$out" | sed -n 's/.*(Library: OpenSSL \([0-9][0-9.]*\).*/\1/p')
+          got=${lib:-$(printf '%s' "$out" | awk '{print $2}')}
+          echo "openssl: $out"
+          [ "$got" = '${{ matrix.version }}' ] || {
+            echo "::error::the libcrypto in use is $got, not ${{ matrix.version }} -- this leg would have graded the wrong OpenSSL"
+            exit 1
+          }
           scripts/check-load.sh build "$(command -v node)"
 
   lint:
