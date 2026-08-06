@@ -44,52 +44,102 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  drift:
-    name: newer upstream release
+  # One bump PR, always, on one branch that is RESET off main every week.
+  #
+  # Why a PR rather than the issue this used to open: an issue tells you a
+  # version moved; a PR tells you whether the new version still builds. That
+  # matters more here than usual, because an aws-sdk-cpp bump moves vendored s2n
+  # and scripts/patch-s2n-openssl4.sh asserts an exact call-site count -- a red
+  # build on this PR is the signal that B5 was fixed upstream and our patch
+  # should be deleted.
+  #
+  # Why force-reset rather than merge main in: the branch is derived state, not
+  # work. Resetting means the PR is always exactly `main + N bump commits`, never
+  # carries a stale bump to a version that has since moved again, and never needs
+  # conflict resolution. Force-pushing the same branch keeps ONE PR open and
+  # updates it in place rather than opening a new one weekly.
+  bump:
+    name: bump pinned dependencies
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
-      contents: read
-      issues: write
+      contents: write        # push the branch
+      pull-requests: write   # open it the first time
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: check for newer releases and open an issue
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: bump
+        id: bump
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          out=$(scripts/update-vendored.sh check 2>&1); rc=$?
-          printf '%s\n' "$out"
-          # 2 is "a newer release exists", which is the reason this job runs;
-          # anything else non-zero is a genuine failure and should surface.
-          case $rc in
-            0) exit 0 ;;
-            2) ;;
-            *) exit "$rc" ;;
-          esac
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # -B resets the branch to main even if it already exists locally.
+          git checkout -qB deps/bump
+          if scripts/bump-deps.sh; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "everything already at its latest release"
+          fi
 
-          # No heredoc: its terminator would have to sit at column 0, which ends
-          # the YAML block scalar this whole script lives in.
-          printf '%s\n' "$out" | sed -n 's/^drift: //p' | while read -r name old new; do
-            title="$name $new is available (vendored $old)"
-            # Title match rather than a label, so this needs no repo setup.
-            if gh issue list --state open --search "$title in:title" \
-                 --json title --jq '.[].title' | grep -qxF "$title"; then
-              echo "already open: $title"
-              continue
-            fi
-            body=$(printf '%s\n' \
-              "\`$name\` is vendored at $old; upstream has released $new." \
-              "" \
-              "To take it:" \
-              "" \
-              "    scripts/update-vendored.sh update $name" \
-              "" \
-              "That writes nothing if the new release drops an API \`src/\` uses," \
-              "rewrites the recorded version in \`third_party/vendored.manifest\`" \
-              "and the dependency README, and leaves building and testing to CI" \
-              "on the resulting commit." \
-              "" \
-              "Opened by \`.github/workflows/vendored.yml\`.")
-            gh issue create --title "$title" --body "$body"
-          done
+      # --force-with-lease would REFUSE here: the remote branch was written by a
+      # previous run of this job and no local ref tracks it, which is exactly the
+      # case the lease guards against. A plain --force is correct because the
+      # branch is derived state this job wholly owns; nothing else may write it.
+      - name: push the branch
+        if: steps.bump.outputs.changed == 'true'
+        run: git push --force origin deps/bump
+
+      # Created only when one is not already open -- an existing PR picks up the
+      # force-push on its own, which is the entire point of reusing the branch.
+      #
+      # KNOWN LIMITATION, stated rather than discovered later: a PR opened with
+      # GITHUB_TOKEN does not trigger `on: pull_request` workflows, so ci.yml
+      # will NOT run on it. Until this uses an app token or a PAT, someone has to
+      # kick CI -- closing and reopening the PR is enough. The PR is still worth
+      # more than the issue it replaces, because it carries the exact diff.
+      - name: open the pull request if one is not already open
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(gh pr list --head deps/bump --state open --json number --jq '.[].number')" ]; then
+            echo "an open PR already tracks deps/bump; the force-push updated it"
+            exit 0
+          fi
+          # Body via an INDENTED quoted heredoc. Written inline, its blank
+          # lines and column-0 text terminated the YAML block scalar and the
+          # whole file stopped parsing -- the trap this repository has hit
+          # before. Everything here stays indented; 'EOF' is quoted so nothing
+          # is expanded.
+          cat > /tmp/pr-body.md <<'EOF'
+          Opened weekly by `.github/workflows/vendored.yml`.
+
+          This branch is **reset off `main`** every week and force-pushed, so it
+          is always exactly `main` plus one commit per dependency that moved. It
+          is derived state: do not commit onto it, and expect history to be
+          rewritten.
+
+          **CI does not run on this PR automatically.** Pull requests opened with
+          `GITHUB_TOKEN` do not trigger `pull_request` workflows. Close and
+          reopen it to run CI.
+
+          An `aws-sdk-cpp` bump moves vendored s2n, and
+          `scripts/patch-s2n-openssl4.sh` asserts an exact `ASN1_STRING_data`
+          call-site count. A red build there is the signal that B5 was fixed
+          upstream and the patch should be deleted.
+          EOF
+          # The heredoc body is indented for YAML's sake, so strip that indent
+          # before it becomes the PR description.
+          sed -i 's/^          //' /tmp/pr-body.md
+          gh pr create --base main --head deps/bump \
+            --title 'build: bump pinned dependencies' \
+            --body-file /tmp/pr-body.md

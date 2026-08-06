@@ -971,7 +971,26 @@ jobs:
   # every schedule and dispatch rather than waiting for one.
   release:
     name: publish the release
-    needs: [build, build-musl, test, test-musl]
+    # EVERY job that can say the artifact is wrong, not merely the ones that
+    # produce it. openssl-runtime was missing here, which meant a tag could have
+    # published a module that fails to dlopen on OpenSSL 3.0 or 4.0 -- B4 and B5
+    # exactly, the two defects that took a day to find. The guard existing but
+    # not gating is worse than not having it: it produces a green tick beside a
+    # broken release.
+    #
+    # real-kms is deliberately NOT here, and not by oversight. It is skipped on a
+    # tag push (the allow-list admits only the daily cron, dispatch and a
+    # label), and a skipped `needs` skips the dependent -- listing it would block
+    # every release outright.
+    needs:
+      - build
+      - build-musl
+      - test
+      - test-musl
+      - openssl-runtime
+      - openssl-runtime-musl
+      - openssl-headers
+      - lint
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
