@@ -141,11 +141,11 @@ build)
     # Matches the glibc release legs: static libstdc++/libgcc so the artifact
     # does not additionally require the builder's GCC runtime.
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAWSKMS_BACKEND="$BACKEND" \
-      -DOPENSSL_ROOT_DIR="$OSSL_PREFIX" \
+      -DOPENSSL_ROOT_DIR="$OSSL_PREFIX" -DCMAKE_PREFIX_PATH="$OSSL_PREFIX" \
       -DCMAKE_MODULE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
   else
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAWSKMS_BACKEND="$BACKEND" \
-      -DOPENSSL_ROOT_DIR="$OSSL_PREFIX"
+      -DOPENSSL_ROOT_DIR="$OSSL_PREFIX" -DCMAKE_PREFIX_PATH="$OSSL_PREFIX"
   fi
 
   say "build"

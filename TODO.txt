@@ -636,7 +636,79 @@ WORK
         standard GitHub behaviour with no per-leg `needs`, but it means a single
         broken platform now blocks all downstream signal.
 
-        STILL NOT VERIFIED ON A RUNNER: test, openssl-runtime, real-kms gating. Four of the glibc legs had never executed
+        FULLY GREEN ON RUNNERS 2026-08-06 (run 31076859055): 4 builds, 4 test
+        legs, 2 musl builds, 2 test-musl legs, 3 openssl-headers, 3
+        openssl-runtime, lint. Verified rather than trusted -- each runtime leg
+        was checked to report matching binary AND library versions:
+          3.0.21 (Library: 3.0.21)  provider active
+          3.5.7  (Library: 3.5.7)   provider active
+          4.0.1  (Library: 4.0.1)   provider active
+
+        THE RUNTIME LANE CAUGHT A FALSE PASS ON ITS SECOND RUN, which is the
+        best argument for its existence. The prefix's lib/ was not on the
+        runtime linker path, so:
+          4.0 died loudly -- "libssl.so.4: cannot open shared object file",
+            because nothing on the runner carries that SONAME
+          3.0 and 3.5 failed SILENTLY -- their SONAME is libcrypto.so.3, which
+            ubuntu has, so they loaded the RUNNER's OpenSSL and passed. The 3.0
+            leg reported success having graded 3.0.13 instead of 3.0.21:
+            "OpenSSL 3.0.21 ... (Library: OpenSSL 3.0.13 ...)"
+        Fixed with LD_LIBRARY_PATH/DYLD_LIBRARY_PATH plus a version assertion.
+        The assertion first read the BINARY version, which would have passed
+        3.0.21 while the library was 3.0.13 -- it now parses the "(Library: ...)"
+        clause. A runtime lane that cannot prove which runtime it used is worth
+        nothing.
+
+        REAL-KMS VERIFIED ON A RUNNER 2026-08-06 (run 31077332081,
+        workflow_dispatch with real_kms ticked): the folded job SUCCEEDED --
+        allow-list gating, OIDC assume-role, key creation, the suite as the
+        least-privilege signer, teardown and the billable-status report. The
+        money path works from inside ci.yml.
+
+        AND THE B4 GUARD EARNED ITS PLACE ON THE SAME RUN by blocking three
+        broken artifacts. The aws backend against the 3.0 floor:
+          ubuntu glibc  ok    226 symbols, all within 3.0
+          macOS         FAIL  EVP_MD_CTX_get_size_ex
+          musl          FAIL  EVP_MD_CTX_get_size_ex
+
+        ROOT CAUSE, and it is NOT what the floor work assumed:
+        -DOPENSSL_ROOT_DIR governs OUR find_package(OpenSSL), but s2n inside the
+        AWS SDK resolves its OWN libcrypto and never sees it. So s2n compiled
+        against whatever headers the machine had -- homebrew 3.6 on macOS,
+        openssl-dev 3.5.7 on Alpine -- and re-emitted the 3.4+ expansion of the
+        EVP_MD_CTX_size macro. ubuntu passes ONLY BY LUCK: its system OpenSSL
+        happens to be 3.0.x, so s2n picked the right expansion by accident.
+
+        FIXED 2026-08-06 by also passing -DCMAKE_PREFIX_PATH. s2n's own
+        cmake/modules/Findcrypto.cmake hints ONLY on CMAKE_PREFIX_PATH and
+        CMAKE_INSTALL_PREFIX -- it has never heard of OPENSSL_ROOT_DIR:
+
+          find_path(crypto_INCLUDE_DIR NAMES openssl/crypto.h
+                    HINTS "${CMAKE_PREFIX_PATH}" "${CMAKE_INSTALL_PREFIX}")
+
+        Applied at all three configure sites: the build job, the real-kms job,
+        and ci-alpine.sh.
+
+        VERIFIED LOCALLY, aws backend on macOS arm64: s2n now reports
+        "LibCrypto Include Dir: <floor>/include" and the module needs 211
+        symbols, ALL present in 3.0.21 -- EVP_MD_CTX_get_size_ex is gone.
+
+        CAVEAT ON THAT VERIFICATION: build-aws was reconfigured IN PLACE, and
+        cmake had cached the earlier OpenSSL entries, so our own
+        find_package(OpenSSL) stayed on homebrew 3.6.3 while s2n picked up the
+        new CMAKE_PREFIX_PATH. It therefore proves the s2n half -- which is the
+        defect -- but our sources compiled against 3.6 headers. CI configures a
+        fresh build dir, so both will use the floor there. Not yet confirmed on
+        a runner.
+
+        THIS MACRO HAS NOW BITTEN THREE TIMES, each by a different mechanism:
+        the build host's headers (B4 proper), the Intel /usr/local/include
+        preprocessor path (awskms_unit link failure), and s2n's independent
+        libcrypto discovery. The guard caught all three.
+
+        NOTE the guard worked exactly as designed: the defect never reached an
+        uploaded artifact, and the failure names the symbol rather than surfacing
+        later as a silent dlopen failure on a user's machine. Four of the glibc legs had never executed
         even before this change, and the whole build/test split is new. Local
         rehearsal covers the musl path only.
 

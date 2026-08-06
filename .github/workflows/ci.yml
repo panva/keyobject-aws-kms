@@ -242,8 +242,20 @@ jobs:
           # /bin/bash 3.2, where expanding an EMPTY array under `set -u` is an
           # "unbound variable" error. Linux has bash 5 and does not care, so this
           # fails on exactly one leg of the matrix.
+          # CMAKE_PREFIX_PATH as well as OPENSSL_ROOT_DIR, and the second one is
+          # the load-bearing one for the aws backend. OPENSSL_ROOT_DIR steers
+          # OUR find_package(OpenSSL); s2n inside the AWS SDK uses its own
+          # cmake/modules/Findcrypto.cmake, which hints only on CMAKE_PREFIX_PATH
+          # and CMAKE_INSTALL_PREFIX and has never heard of OPENSSL_ROOT_DIR.
+          # Without this, s2n compiled against whatever headers the machine had
+          # -- homebrew 3.6 on macOS, openssl-dev 3.5.7 on Alpine -- and
+          # re-emitted the 3.4+ expansion of the EVP_MD_CTX_size macro, so the
+          # SHIPPING artifact required EVP_MD_CTX_get_size_ex and failed the
+          # floor check on 4 of 6 targets. ubuntu passed only because its system
+          # OpenSSL happens to be 3.0.x.
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
             -DOPENSSL_ROOT_DIR="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR" \
+            -DCMAKE_PREFIX_PATH="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR" \
             -DAWSKMS_BACKEND=${{ matrix.backend }} ${extra[@]+"${extra[@]}"}
 
       - name: build
@@ -678,8 +690,11 @@ jobs:
       - name: build the provider
         run: |
           set -euo pipefail
+          # See the note in the build job: s2n honours CMAKE_PREFIX_PATH, not
+          # OPENSSL_ROOT_DIR, and this job builds the aws backend.
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAWSKMS_BACKEND=aws \
-            -DOPENSSL_ROOT_DIR="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
+            -DOPENSSL_ROOT_DIR="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR" \
+            -DCMAKE_PREFIX_PATH="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
           cmake --build build --parallel
 
       # Before spending money. A module that fails to load or leaks libcrypto is
