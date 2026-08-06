@@ -102,6 +102,26 @@ function(awskms_add_aws_sdk)
   set(MINIMIZE_SIZE ON CACHE BOOL "" FORCE)
   set(USE_CRT_HTTP_CLIENT ON CACHE BOOL "" FORCE)
   set(USE_OPENSSL ON CACHE BOOL "" FORCE)
+  # B5: vendored s2n calls ASN1_STRING_data(), removed in OpenSSL 4.0, which
+  # makes the module fail to dlopen on a 4.0 host entirely. Applied here, after
+  # the fetch and before add_subdirectory, so the patched sources are what s2n
+  # compiles. The script asserts the call-site count and fails loudly when
+  # upstream fixes it, so the workaround cannot quietly outlive its reason.
+  execute_process(
+    # CMAKE_CURRENT_FUNCTION_LIST_DIR, not CMAKE_CURRENT_LIST_DIR: inside a
+    # function BODY the latter resolves to the file being processed at CALL time
+    # -- the top-level CMakeLists.txt -- so it pointed one directory above the
+    # repository and failed with a bare "no such file or directory".
+    COMMAND "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../scripts/patch-s2n-openssl4.sh"
+            "${_awskms_sdk_src}"
+    RESULT_VARIABLE _awskms_s2n_patch_rc
+    OUTPUT_VARIABLE _awskms_s2n_patch_out
+    ERROR_VARIABLE  _awskms_s2n_patch_out)
+  if(NOT _awskms_s2n_patch_rc EQUAL 0)
+    message(FATAL_ERROR "patching vendored s2n for OpenSSL 4.0 failed (rc=${_awskms_s2n_patch_rc}):\n${_awskms_s2n_patch_out}")
+  endif()
+  message(STATUS "${_awskms_s2n_patch_out}")
+
   # s2n runs its libcrypto feature probes as try_compile during add_subdirectory.
   # If they cannot link a real libcrypto every S2N_LIBCRYPTO_SUPPORTS_* fails
   # CLOSED and s2n is quietly built as though libcrypto supports nothing -- which

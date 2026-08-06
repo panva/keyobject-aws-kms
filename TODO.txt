@@ -701,6 +701,81 @@ WORK
         fresh build dir, so both will use the floor there. Not yet confirmed on
         a runner.
 
+        CONFIRMED ON RUNNERS 2026-08-06 (run 31078241945): every aws build on
+        all six targets passed the floor check, and the aws runtime lanes pass on
+        3.0 and 3.5. The push run (31078206658) is fully green, 20 jobs.
+
+[ ] B5. THE AWS BACKEND CANNOT LOAD ON OPENSSL 4.0, and no build-header choice
+        fixes it. Found 2026-08-06 by the openssl-runtime lane -- the one job
+        that loads the artifact rather than compiling it.
+
+          openssl 4.0.1 runtime / aws -> FAIL  ASN1_STRING_data
+
+        ASN1_STRING_data is a 1.0.2-era API, deprecated since 1.1.0 in favour of
+        ASN1_STRING_get0_data, and REMOVED in OpenSSL 4.0. It is not ours:
+
+          s2n/crypto/s2n_certificate.c
+          s2n/tls/s2n_x509_validator.c
+
+        This is the OPPOSITE direction from B4 and is not solvable the same way.
+        B4 was "built too new to run on old"; this is "a dependency uses an API
+        the NEW version deleted". Compiling against older headers cannot help --
+        the symbol simply does not exist in a 4.0 libcrypto. Measured contrast:
+        the STUB module built against 3.0 loads on 3.0, 3.5 AND 4.0; the aws
+        module loads on 3.0 and 3.5 only.
+
+        Practical exposure is narrow: node bundles OpenSSL 3.5.7 and never
+        bundles 4.0, so every stock nodejs.org install is unaffected. It bites a
+        node built --shared-openssl against 4.0.
+
+        DECIDED AND DONE 2026-08-06: option (c), patch, until (b) lands.
+        scripts/patch-s2n-openssl4.sh swaps the four call sites to
+        ASN1_STRING_get0_data (which has existed since 1.1.0, well below our 3.0
+        floor), restoring the non-const cast the old signature implied. All four
+        sites only READ -- s2n's own comments say the pointer must not be freed
+        or modified -- so nothing depended on that writability. Run from
+        cmake/FetchAwsSdkKms.cmake after the fetch, before add_subdirectory.
+
+        VERIFIED, aws backend rebuilt on macOS arm64:
+          vs 3.0.21  ok      vs 3.5.7  ok      vs 4.0.1  ok   (was FAIL)
+          ASN1_STRING_data references remaining: 0
+
+        SELF-INVALIDATING. The script asserts EXACTLY four call sites: 0 means
+        upstream fixed it and errors telling you to delete the patch; any other
+        count means the SDK tag moved and errors telling you to re-read the call
+        sites before bumping the number. A temporary workaround should not be
+        able to outlive its reason quietly.
+
+        THE COST, stated plainly: this is our patch inside a security library's
+        x509 validator. The change is mechanical and the semantics identical --
+        same pointer, same bytes, only const differs -- but it is ours now. Drop
+        it the moment (b) lands.
+
+        TWO BUGS IN THE WIRING, both found by the build rather than by reading:
+          CMAKE_CURRENT_LIST_DIR inside a FUNCTION BODY resolves to the file
+            being processed at CALL time -- the top-level CMakeLists.txt -- not
+            the file defining the function, so the path pointed one directory
+            above the repository. CMAKE_CURRENT_FUNCTION_LIST_DIR is the one that
+            means what was intended.
+          The FATAL_ERROR printed OUTPUT_VARIABLE but not RESULT_VARIABLE, so a
+            process that never launched reported "failed:" and nothing at all.
+            Adding rc= surfaced it immediately. A diagnostic that omits the field
+            carrying the cause is worse than none.
+        Also: the first post-patch symbol check read a STALE binary, because the
+        rebuild had failed and nothing recompiled. Checking the exit code is what
+        stopped that being misreported as "the patch does not work".
+
+        THE OPTIONS AS THEY STOOD, kept because (b) is still the destination:
+          a) declare OpenSSL 4.0 unsupported for the shipped (aws) artifact,
+             document it, and mark that one lane expected-to-fail. Cheapest, and
+             honest -- but the README currently implies 3.0..4.0.
+          b) wait for s2n upstream; OpenSSL 4.0 forces their hand eventually.
+             Costs nothing now, but leaves the lane red.
+          c) patch vendored s2n. We already vendor via FetchContent so it is
+             possible, but it is a permanent maintenance burden in a dependency
+             of a dependency.
+        Recommend (a) now and (b) in the background; revisit on an SDK bump.
+
         THIS MACRO HAS NOW BITTEN THREE TIMES, each by a different mechanism:
         the build host's headers (B4 proper), the Intel /usr/local/include
         preprocessor path (awskms_unit link failure), and s2n's independent
