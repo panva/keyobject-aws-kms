@@ -239,7 +239,7 @@ function githubSubPrefix(repo) {
  * further here: the whole event type is either allowed or it is not. That means
  * AWS can no longer distinguish "a PR the maintainer chose to test" from "any PR
  * job in this repository" -- the ONLY thing making that distinction is the
- * `real-kms` label gate in .github/workflows/real-kms.yml, backed by the
+ * `real-kms` label gate on ci.yml's real-kms job, backed by the
  * same-repo check that keeps fork PRs out (a fork gets no OIDC token at all on
  * a pull_request event, so it cannot reach this regardless).
  *

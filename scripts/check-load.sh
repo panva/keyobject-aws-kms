@@ -12,6 +12,14 @@
 # oldest host it is run against.
 set -uo pipefail
 
+# The symbol-extraction rules are shared with check-symbol-floor.sh, which asks
+# the same "needed minus provided" question against the oldest supported
+# libcrypto rather than against a node. They are subtle enough -- which prefixes
+# count as OpenSSL, and why weak undefined symbols must NOT count as
+# requirements -- that keeping two copies would guarantee they drift.
+# shellcheck source=scripts/lib-symbols.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib-symbols.sh"
+
 BUILD_DIR=${1:-build}
 shift || true
 # ${NODES[@]+...} so the documented "no node binaries" mode does not die with
@@ -137,35 +145,13 @@ for node in ${NODES[@]+"${NODES[@]}"}; do
   # Only OpenSSL symbols are audited. Everything else the module needs (libc,
   # libc++) is satisfied through its own declared dependencies in the normal way;
   # it is specifically the OpenSSL ABI that has to come from the host process.
-  OSSL_RE='^(OSSL_|OPENSSL_|EVP_|BN_|ERR_|CRYPTO_|ASN1_|EC_|ECDSA_|ECDH_|RSA_|DSA_|DH_|X509_|X509V3_|d2i_|i2d_|PEM_|HMAC_|OBJ_|BIO_|RAND_|SHA[0-9]|MD5_|CONF_|NCONF_|UI_|SSL_|TLS_|CMS_|OCSP_|PKCS[0-9]|EVP)'
-  # WEAK undefined symbols are not requirements and must be excluded, or this
-  # reports failures that are not. A weak undefined symbol resolves to 0 when the
-  # host does not provide it, and the referencing code tests for it at runtime.
-  # aws-c-cal does exactly that to support several libcrypto vintages at once: on
-  # Linux the module carries weak references to the OpenSSL 1.0.2-era
-  # EVP_MD_CTX_create / EVP_MD_CTX_destroy / HMAC_CTX_init / HMAC_CTX_cleanup,
-  # none of which Node's bundled OpenSSL exports and none of which it needs to.
-  # Counted as requirements they fail the audit on a module that loads perfectly
-  # -- measured: 186 strong against 9 weak, and the module is `status: active` in
-  # the openssl CLI, which uses RTLD_NOW.
-  if [[ $(uname -s) == Darwin ]]; then
-    # `nm -m` lines end with " (dynamically looked up)", so strip that before
-    # taking the symbol as the last field.
-    need=$(nm -m -u "$MODULE" | grep -v 'weak external' \
-           | sed 's/ (dynamically looked up)$//' | awk '{print $NF}' \
-           | sed 's/^_//' | grep -E "$OSSL_RE" | sort -u)
-    libs=$(otool -L "$node" 2>/dev/null | awk '/lib(crypto|ssl)/{print $1}')
-    have=$( { nm -gU "$node" 2>/dev/null | awk '{print $3}'
-              for l in $libs; do [[ -f $l ]] && nm -gU "$l" 2>/dev/null | awk '{print $3}'; done
-            } | sed 's/^_//' | sort -u )
-  else
-    # $1=="U" keeps strong undefined only; weak undefined shows as 'w'.
-    need=$(nm -D --undefined-only "$MODULE" | awk '$1=="U"{print $NF}' | grep -E "$OSSL_RE" | sort -u)
-    libs=$(ldd "$node" 2>/dev/null | awk '/lib(crypto|ssl)/{print $3}')
-    have=$( { nm -D --defined-only "$node" 2>/dev/null | awk '{print $NF}'
-              for l in $libs; do [[ -f $l ]] && nm -D --defined-only "$l" 2>/dev/null | awk '{print $NF}'; done
-            } | sort -u )
-  fi
+  need=$(awskms_needed_symbols "$MODULE")
+  libs=$(awskms_linked_ssl_libs "$node")
+  # A node with BUNDLED OpenSSL reports no libs, which is correct -- its OpenSSL
+  # symbols are exported by the executable itself. Unquoted on purpose: $libs is
+  # a newline-separated list to be split into separate arguments.
+  # shellcheck disable=SC2086
+  have=$(awskms_provided_symbols "$node" $libs)
   if [[ -n $libs ]]; then
     echo "  (shared OpenSSL: $(echo "$libs" | tr '\n' ' '))"
   fi

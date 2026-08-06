@@ -1,7 +1,7 @@
 # The dead man's switch.
 #
 # Nothing in GitHub Actions covers a runner that dies outright, so the always()
-# teardown step in real-kms.yml is not a guarantee. This sweeps every key carrying
+# teardown step in ci.yml's real-kms job is not a guarantee. This sweeps every key carrying
 # the test tag and schedules deletion for any not already pending.
 #
 # Running it unconditionally is safe because deletion is never cancelled in this
@@ -18,7 +18,10 @@ on:
     - cron: '43 3 * * *'
   workflow_dispatch:
 
-# The SAME group as real-kms.yml, so the reaper can never race a test run.
+# The SAME group as ci.yml's real-kms job, so the reaper can never race a test
+# run. That job cannot express `queue: max` -- job-level concurrency takes only
+# `group` and `cancel-in-progress` -- but the exclusion that matters, never
+# sweeping while a run holds keys, comes from sharing this group.
 concurrency:
   group: awskms-real-kms
   queue: max

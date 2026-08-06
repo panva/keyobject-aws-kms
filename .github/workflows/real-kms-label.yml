@@ -1,0 +1,67 @@
+# Disarms the real-kms button.
+#
+# Applying the `real-kms` label to a pull request arms the real-kms job in
+# ci.yml, which creates and deletes actual KMS keys. Both workflows fire on the
+# same `labeled` event; this one exists only to take the label straight back off.
+#
+# WHY THE LABEL IS REMOVED AT ALL. Not for safety. ci.yml gates on
+# `github.event.action == 'labeled'`, so the run happens on the LABELING EVENT
+# rather than on the label being present -- a later push cannot re-fire it, and
+# nothing depends on this workflow winning any race. Removal is what makes the
+# label re-usable: you cannot add a label that is already there, so leaving it in
+# place would turn a one-press button into a manual remove-then-add every time.
+#
+# WHY A SEPARATE WORKFLOW rather than a step in ci.yml. Permission separation.
+# The real-kms job holds `id-token: write` and assumes a role that can create and
+# delete KMS keys; it must never also be able to modify the pull request. This
+# job holds `pull-requests: write` and nothing else, touches no repository
+# content, and does not check anything out.
+#
+# WHY `pull_request` AND NOT `pull_request_target`. pull_request_target would
+# give a writable token even on fork pull requests, and since this job runs no
+# repository code that would be defensible. It is still not worth it: the only
+# thing it buys is tidying a label on a fork PR, which cannot arm real-kms in the
+# first place. Keeping every workflow in this repository on `pull_request` means
+# the rule needs no exceptions to reason about.
+name: real-kms-label
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  disarm:
+    name: remove the real-kms label
+    # Same-repo is checked so this SKIPS on fork pull requests rather than
+    # failing on them: under `pull_request` a fork gets a read-only token, so
+    # `pull-requests: write` cannot be granted and the API call would 403 on
+    # every fork label. real-kms does not run on forks either, so there is
+    # nothing to disarm there.
+    if: >-
+      github.event.label.name == 'real-kms' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # No checkout: this touches the API only. `gh` is preinstalled on the
+      # runner image.
+      #
+      # A 404 is tolerated and reported rather than failed. Removing a label that
+      # is already gone is the expected outcome of a re-run, and failing the job
+      # for it would put a red mark on a pull request where nothing is wrong.
+      - name: remove the label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if gh api -X DELETE \
+               "repos/$GITHUB_REPOSITORY/issues/$PR/labels/real-kms" >/dev/null 2>&1; then
+            echo "removed the real-kms label from #$PR; it can be applied again to re-run"
+          else
+            echo "::notice::the real-kms label was already gone from #$PR"
+          fi

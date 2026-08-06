@@ -119,9 +119,17 @@ node scripts/real-kms-keys.mjs status --profile awskms-admin
 
 ## CI configuration
 
-Two workflows: [real-kms.yml](../.github/workflows/real-kms.yml) provisions, tests
-and tears down; [real-kms-reaper.yml](../.github/workflows/real-kms-reaper.yml) is
-the backstop for a runner that dies before teardown.
+The `real-kms` job in [ci.yml](../.github/workflows/ci.yml) provisions, tests and
+tears down; [real-kms-reaper.yml](../.github/workflows/real-kms-reaper.yml) is the
+backstop for a runner that dies before teardown; and
+[real-kms-label.yml](../.github/workflows/real-kms-label.yml) removes the label
+again so it behaves as a one-shot button.
+
+The job is armed by the *labelling event* rather than by the label being present,
+so a later push to the branch cannot re-fire it. It shares the reaper's
+`awskms-real-kms` concurrency group, and label-triggered runs sit in their own
+workflow-level group with cancellation disabled — cancelling a run that has
+already created keys is what leaves them billing.
 
 ### Repository variables
 
@@ -194,8 +202,8 @@ It widens this role, and the widening cannot be narrowed on the AWS side. A
 and no label — so the trust policy either allows the entire event type or none of
 it.
 
-What is left holding the line is entirely in
-[real-kms.yml](../.github/workflows/real-kms.yml):
+What is left holding the line is entirely in the `real-kms` job of
+[ci.yml](../.github/workflows/ci.yml):
 
 - the PR must come from this repository, not a fork. This one is robust
   independently of the `if:`, because a fork PR receives no OIDC token at all on a

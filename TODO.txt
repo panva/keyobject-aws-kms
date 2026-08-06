@@ -10,19 +10,19 @@ Signing is DONE for every key spec in scope and verified against real AWS KMS.
 
 CI is live as of 2026-08-05, on real runners rather than only locally: ci.yml
 over SIX targets -- darwin-{arm64,x64}, linux-{x64,arm64}, linuxmusl-{x64,arm64}
--- both backends; real-kms.yml against the actual service (208 passing, 0 keys
+-- both backends; the real-kms job against the actual service (208 passing, 0 keys
 left billable); and release artifacts built, uploaded, and verified by
 downloading one and running it. The six-target matrix is pushed but not yet
 observed green on a runner: four of the six legs had never executed before, and
-the musl pair is verified locally against a real Alpine container instead. Requires Node >= 26.7.0, which published that
-day; the floor lives in .node-version and is read by both workflows.
+the musl pair is verified locally against a real Alpine container instead.
+
+Requires Node >= 26.7.0, where the OSSL_STORE loader shipped; the floor lives in
+.node-version and is read by both workflows.
 
 THIS FILE IS ONLY WHAT IS LEFT. Why things are the way they are -- decisions,
 measurements, dead ends already paid for -- is in docs/journal.md. The three-tier
 distribution plan is in docs/distribution.md. Each item below stands on its own;
 nothing here requires reading anything else first.
-
-Requires Node >= 26.7.0, where the OSSL_STORE loader shipped.
 
 
 DECISIONS NEEDED -- these are judgement calls, not measurements, and they
@@ -367,8 +367,244 @@ block the work items that name them
         unverified assumption is the worse trade.
 
 
+DEFECTS
+-------
+
+[ ] B4. THE SHIPPED ARTIFACT CANNOT LOAD ON AN OPENSSL 3.0 HOST, and every CI
+        job says green. Found 2026-08-06 while scoping the runtime OpenSSL
+        matrix. This is the same shape as B1: a property verified one way
+        (it compiles) recorded as a property it is not (it works).
+
+        MEASURED. Built against homebrew 3.6.3 headers, the stub module's
+        undefined set includes EVP_PKEY_sign_message_init; the shipping aws
+        build additionally needs EVP_MD_CTX_get_size_ex. Checked against a real
+        OpenSSL 3.0.20 libcrypto (debian:12, nm -D --defined-only):
+
+          MISSING  EVP_PKEY_sign_message_init
+          MISSING  EVP_MD_CTX_get_size_ex
+          PRESENT  OPENSSL_strcasecmp      <- controls, proving the check works
+          PRESENT  EVP_PKEY_sign_init
+
+        Missing symbols make dlopen FAIL OUTRIGHT -- "symbol not found in flat
+        namespace" -- not fail later at first use. So on such a host the
+        provider does not load at all.
+
+        WHY CI NEVER SAW IT. check-openssl-matrix.sh compiles against 3.0.21 /
+        3.5.7 / 4.0.1 headers and greps for "Built target awskms". Compilation
+        is not the failing axis. Nothing ever takes a module built against NEW
+        headers and resolves it against an OLD libcrypto -- which is the only
+        way this appears.
+
+        THE AWS CASE IS A HEADER MACRO, which is why it survived review: s2n
+        calls EVP_MD_CTX_size, which expands to EVP_MD_get_size(...) under 3.0
+        headers but to the 3.4+ FUNCTION EVP_MD_CTX_get_size_ex under 3.6
+        headers. Identical vendored source, different undefined symbol,
+        determined entirely by the build host's headers.
+
+        FIX, two parts. DECIDED 2026-08-06: floor is 3.0, on the strength of
+        node testing shared-3.0.21 as a required CI leg -- that population is
+        real, and a 3.5-built artifact cannot load there at all.
+
+          1. Build release artifacts against the OLDEST supported headers
+             rather than whatever the runner happens to have.
+             VERIFIED LOCALLY 2026-08-06, stub backend, macOS arm64:
+               built against 3.0.21     -> 68 OpenSSL symbols, all within 3.0
+               (against 3.6.3 it was 71, three of them unavailable on 3.0)
+               check-load against the 3.6.3 CLI + node 26.7.0 -> all ok
+               full suite on node 26.7.0 (bundled 3.5.7)     -> 289/289, 0 fail
+             So compile-old-run-new holds. STILL WIRING: the build job needs a
+             3.0 prefix on every platform, and the AWS backend has not been
+             rebuilt against 3.0 -- only the stub has.
+
+          2. scripts/check-symbol-floor.sh (NEW) -- nm -u the module and diff
+             against the lowest supported libcrypto's exports. No node, no
+             runtime host, milliseconds. PROVEN to catch both instances:
+               stub built vs 3.6.3 headers -> FAIL EVP_PKEY_sign_message_init
+               shipped aws artifact        -> FAIL EVP_MD_CTX_get_size_ex
+               3.0-built stub              -> ok        (control)
+               stub vs the 3.6.3 it was built against -> ok  (control)
+             Its real assertion is not "we compiled against 3.0" but "the build
+             actually USED those headers rather than whatever the runner had",
+             which is the mistake that produced B4 in the first place.
+
+             The symbol-extraction rules now live in scripts/lib-symbols.sh,
+             sourced by BOTH this and check-load.sh. Two copies of "which
+             prefixes are OpenSSL" and "weak undefined symbols are not
+             requirements" would have drifted. check-load.sh re-verified after
+             the refactor: same 71 symbols, all checks pass.
+
+        STILL UNVERIFIED: whether a 3.0-BUILT provider still drives ML-DSA on a
+        3.5+ host. The run above could not answer it -- the stub drops those
+        suites under 3.0 headers, so ML-DSA was never exercised. It needs the
+        aws backend built against 3.0 and pointed at real KMS, or the runtime
+        OpenSSL matrix. Do not claim ML-DSA works on a 3.0-built artifact until
+        one of those has run.
+
+        SCOPE. Stock nodejs.org builds bundle OpenSSL 3.5.7 (node 26), so they
+        are unaffected. The exposure is --shared-openssl hosts pinned to 3.0 --
+        RHEL 9, Ubuntu 22.04, Debian 12. Note also OPENSSL_strcasecmp arrived in
+        3.0.3 while Ubuntu 22.04 ships 3.0.2, so "3.0" is not one floor.
+        Whatever the outcome, the >= 3.0 claim in the README is currently false
+        for the binaries we publish and must either be made true or narrowed.
+        Blocks: T4 (what the artifacts are built against), T1 (the claim).
+
+
 WORK
 ----
+
+[ ] T7. CI restructure -- build once, test many. STARTED 2026-08-06.
+
+        DONE, and parsing/shellcheck clean:
+          * `build` lost its node axis entirely. Compiling does not depend on
+            the node version -- verified with a logging `node` shim first on
+            PATH across a fresh configure plus full build: ZERO invocations.
+            That also deleted a latent release bug rather than fixing it: the
+            artifact name is platform+arch with no node component, so once
+            node-versions returns two entries (when Node 27 ships, 2027-04-22)
+            two legs would have uploaded the same name and upload-artifact
+            would 409, nondeterministically, at the end of a 206 MB build.
+          * new `test` job carries the node axis and consumes ONE artifact per
+            platform. Stronger property than before: the bytes published are
+            the bytes exercised on every supported node, rather than one build
+            per node of which one happens to be shipped.
+          * the inter-job payload is five files -- measured as everything
+            check-load.sh, the doctor, test/run.mjs and npm-pack.sh actually
+            read from the build tree. ctest stays in `build` (node-independent,
+            and the only step needing the compiled tree).
+          * `test` uses the RELOCATABLE cnf + AWSKMS_MODULE. build/awskms.cnf
+            bakes the compiling machine's absolute path; across jobs it would
+            work by coincidence of identical workspace paths and fail silently
+            the day one differed.
+          * artifacts now compile against the OpenSSL FLOOR (B4), one workflow-
+            level AWSKMS_OPENSSL_FLOOR, musl included via ci-alpine.sh.
+          * scripts/build-openssl.sh (NEW) -- one recipe, three callers
+            (openssl-headers, the build floor, musl). There were already two
+            divergent copies.
+
+        REAL-KMS FOLDED IN, DONE 2026-08-06. real-kms.yml is deleted; the job
+        lives in ci.yml, and real-kms-label.yml takes the label back off.
+        real-kms-reaper.yml stays -- it is the dead man's switch for a runner
+        that dies before teardown, and folding the tests in makes it MORE
+        necessary, not less.
+
+        Four things had to be got right, three of which are only visible if you
+        go looking:
+
+          * THE GATE IS AN ALLOW-LIST. The natural phrasing carried over from
+            real-kms.yml -- `github.event_name != 'pull_request' || (...)` --
+            is TRUE FOR PUSH. real-kms.yml never ran on push; ci.yml runs on
+            every push to main and on tags. Left inverted, every commit that
+            landed would have spent money. The condition now enumerates the
+            events that may spend.
+          * TWO CADENCES, kept apart by github.event.schedule. real-kms.yml ran
+            daily; ci.yml's cron is every 5 days (sized to GitHub's 7-day cache
+            eviction). Folding without this would have silently stretched the
+            real-KMS smoke pass from daily to 5-daily, and arming it off ci.yml's
+            cron would have dragged the ~206 MB aws matrix along daily.
+          * DISPATCH SPENDING IS OPT-IN. Dispatching ci.yml by hand is ordinary
+            -- warming the SDK cache, running the aws backend before a release --
+            and must not quietly cost money. A `real_kms` checkbox, default off.
+          * CONCURRENCY. A label-triggered run gets its OWN workflow-level group
+            with cancellation disabled, because cancelling a run that has already
+            created keys is exactly what leaves them billing. The job also joins
+            the reaper's cross-workflow `awskms-real-kms` group. Job-level
+            concurrency accepts only `group` and `cancel-in-progress`, so
+            `queue: max` cannot be carried over -- the loss is a lossy PENDING
+            queue, never a cancelled RUNNING one, and only a running job holds
+            keys.
+
+        The label is armed by the LABELLING EVENT, not by the label being
+        present. That is what makes it a true one-shot: a later `synchronize`
+        cannot re-fire it, so safety does not depend on the remover winning a
+        race. Removal exists only so the button can be pressed again.
+
+        OPENSSL RUNTIME LANES DONE 2026-08-06, and far cheaper than first
+        scoped. I had proposed building node --shared-openssl per version via
+        node's own tools/nix/openssl-matrix.nix (~112 min a leg, or ~5 with
+        node's prebuilt V8 from cachix). That answers a question nobody asked.
+        What varies with the OpenSSL version is the module's SYMBOL BINDING and
+        provider registration, and libcrypto is the loader, not node: OpenSSL's
+        DSO layer dlopens with RTLD_NOW, so every undefined symbol must resolve
+        at load or the load fails outright. The `openssl` CLI of a version is
+        therefore a faithful host for the whole question -- and build-openssl.sh
+        already installs one per version. No node build, no nix, no cachix.
+
+        The new openssl-runtime job takes the artifact AS BUILT -- compiled once
+        against the floor, not rebuilt per version -- and loads it into each of
+        3.0 / 3.5 / 4.0. That crossing is precisely the gap B4 lived in:
+        openssl-headers proves each header tree COMPILES, and every one of them
+        did while the shipped artifact could not load on 3.0.
+
+        MEASURED LOCALLY by actually loading the module into each CLI, not by
+        symbol arithmetic alone. The 3.0-built stub module, 68 required symbols:
+          host 3.0.21 -> loads, provider reports active
+          host 3.5.7  -> loads, provider reports active
+          host 4.0.1  -> loads, provider reports active
+        The 4.0 result is the one that mattered: it crosses a MAJOR version
+        boundary, where deprecated symbols could have been removed outright.
+
+        AND THE CONVERSE, which is B4 reproduced at RUNTIME rather than inferred:
+        the aws artifact built against 3.6.3 headers, loaded on the 3.0 host ->
+        "did not load". That is the failure users would have hit, and no job in
+        CI could see it before this one.
+
+        AND THE LANE IMMEDIATELY CAUGHT A FLAW IN ITS OWN HARNESS. The first
+        3.0 run reported "loads and reports active (OpenSSL 3.6.3)" -- the
+        machine's own openssl, not the 3.0 under test. The 3.0 prefix had been
+        built with `install_dev`, which installs headers and libraries but NO
+        CLI, so prepending its bin/ to PATH was a no-op and the check silently
+        graded a different OpenSSL. build-openssl.sh's completeness test now
+        requires bin/openssl as well as configuration.h and lib/, so a prefix
+        like that is rebuilt rather than accepted from cache.
+
+        NOT DONE: (3.0/3.5/4.0 hosts). Blocked on nothing
+            technical: nodejs.org binaries static-link OpenSSL, so those lanes
+            need node built --shared-openssl, which is what node's own
+            tools/nix/openssl-matrix.nix does as a required CI leg. ~5 min per
+            leg using node's prebuilt V8 from nodejs.cachix.org, vs ~112 min
+            building V8. Cheaper first cut: the openssl CLI of each version is
+            a faithful host for the dlopen/symbol question, since libcrypto is
+            the loader, not node.
+        MUSL COMPLETED THE MATRIX 2026-08-06. build-musl was doing build AND
+        test in one container, so musl was the one target the node matrix never
+        reached -- built and tested by a single floor-pinned node while every
+        other target was exercised across every supported version.
+        scripts/ci-alpine.sh now takes a phase (build|test) and there is a
+        test-musl job. It has to be a separate JOB for the same reason
+        build-musl does: GitHub cannot run JavaScript actions in an Alpine
+        container on arm64, so checkout, download-artifact and the caches stay
+        on a glibc host and only the run itself goes inside.
+
+        The node matrix reaches musl by resolving the setup-node SPEC against
+        the unofficial-builds index inside the container. Resolving against
+        nodejs.org/dist instead would hard-fail the leg for up to two days after
+        every node release, because musl tarballs lag by 13-54 hours (measured
+        over ten releases; v26.5.1 was +54.1h). A version missing from the index
+        is simply not selected, so the leg falls back to the previous patch
+        rather than breaking. The files[] filter is per-arch on purpose:
+        linux-arm64-musl is a recent addition carried by only 47 of 413 index
+        entries, so an arch-blind filter would 404 on arm64 while x64 passed.
+        Verified against the live index: current/26 -> 26.7.0, lts/* and
+        lts/krypton -> 24.19.0, a bogus spec -> loud error, all on both arches.
+
+        A DEAD BRANCH CAME ALIVE, worth knowing before the shared-OpenSSL
+        lanes land. check-load.sh's symbol audit has always had two halves:
+        symbols from the host binary, and symbols from any libcrypto it links.
+        The SECOND half has never once run in CI, because node bundles OpenSSL
+        statically and so links no libcrypto at all. It first executed when
+        check-symbol-floor.sh pointed at a bare libcrypto -- and immediately
+        reported 68 core symbols "missing", including CRYPTO_malloc and
+        CRYPTO_free, because a real libcrypto.so exports
+        CRYPTO_free@@OPENSSL_3.0.0 while the module references a bare
+        CRYPTO_free. Fixed by stripping @VERSION in scripts/lib-symbols.sh.
+        The reason it hid so long is exactly why the runtime OpenSSL lanes are
+        worth having: a shared-libcrypto host is a code path nothing here has
+        ever taken.
+
+        NOT VERIFIED ON A RUNNER. Four of the glibc legs had never executed
+        even before this change, and the whole build/test split is new. Local
+        rehearsal covers the musl path only.
+
 
 [ ] T1. README accuracy.
         The README is currently developer-facing and does not describe how to

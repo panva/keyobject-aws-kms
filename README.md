@@ -244,20 +244,27 @@ never cancelled, which keeps a full pass at roughly `$0.73` rather than `$22`/mo
 
 ## Continuous integration
 
-Four workflows, each answering one question. Only one of them costs anything.
+Three workflows and one money-spending job, each answering one question. Only
+that job costs anything.
 
 | workflow | answers | runs on | cost |
 | --- | --- | --- | --- |
-| [`ci.yml`](.github/workflows/ci.yml) | does it build, load and pass its tests — on Linux x64/arm64 and macOS arm64, against OpenSSL 3.0/3.5/4.0 headers, and is it formatted | every push and PR; the aws backend on the schedule and on demand | free |
-| [`real-kms.yml`](.github/workflows/real-kms.yml) | does it still work against the **actual** service | daily; a PR labelled `real-kms`; manual dispatch | ~`$0.13` a pass |
+| [`ci.yml`](.github/workflows/ci.yml) | does it build, load and pass its tests — on Linux x64/arm64 (glibc and musl) and macOS arm64/x64, against OpenSSL 3.0/3.5/4.0 headers, and is it formatted | every push and PR; the aws backend on the schedule and on demand | free |
+| [`ci.yml`](.github/workflows/ci.yml) → `real-kms` job | does it still work against the **actual** service | daily; a PR labelled `real-kms`; manual dispatch with the box ticked | ~`$0.13` a pass |
+| [`real-kms-label.yml`](.github/workflows/real-kms-label.yml) | takes the `real-kms` label straight back off, so it works as a button | a PR labelled `real-kms` | free |
 | [`real-kms-reaper.yml`](.github/workflows/real-kms-reaper.yml) | did any run leave keys behind | daily; manual dispatch | free |
 | [`vendored.yml`](.github/workflows/vendored.yml) | is `third_party/` byte-identical to the release it claims, and is a newer one out | on changes to `third_party/`, `src/` or the updater; weekly | free |
 
-The division that matters: **`ci.yml` runs per commit, `real-kms.yml` does not.**
-"Does it still work against the real service" is a question worth answering
-periodically and on demand, not once per push — the daily run covers the first and
-the `real-kms` label covers the second. Everything worth checking per commit is
-free and lives in `ci.yml`.
+The division that matters is not per-file but per-job: **everything in `ci.yml`
+runs per commit except the `real-kms` job, which never does.** "Does it still work
+against the real service" is worth answering periodically and on demand, not once
+per push — a daily cron covers the first, and the `real-kms` label covers the
+second.
+
+That label is a **one-shot button**. The job is armed by the labelling *event*,
+not by the label being present, so a later push cannot re-fire it; and
+`real-kms-label.yml` removes the label immediately, because you cannot apply a
+label that is already there. Press it again to run it again.
 
 `ci.yml` builds the stub backend on pull requests and both backends on the
 schedule, because the aws backend fetches ~206 MB of aws-sdk-cpp. That fetch is

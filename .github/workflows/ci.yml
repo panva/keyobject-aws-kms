@@ -35,25 +35,63 @@ on:
     # that has not already been exercised.
     tags: ['v*']
   pull_request:
+    # `labeled` is what arms the real-kms job below. The other three are the
+    # defaults, which are lost the moment `types:` is written out at all.
+    types: [opened, synchronize, reopened, labeled]
   schedule:
     # Every 5 days rather than weekly, so the aws-sdk-cpp cache entry is refreshed
     # inside GitHub's 7-day eviction window rather than exactly on it.
     - cron: '17 5 */5 * *'
+    # A SECOND cadence, kept distinct from the one above by github.event.schedule.
+    # The former real-kms.yml ran daily; folding it in must not silently stretch
+    # that to five days. This one arms ONLY the real-kms job -- it must not drag
+    # the ~206 MB aws-backend matrix along daily, which is why the backend
+    # expressions below test for the 5-day cron specifically rather than for
+    # `event_name == 'schedule'`.
+    - cron: '17 4 * * *'
   workflow_dispatch:
+    inputs:
+      # Off by default, and deliberately so. Dispatching ci.yml by hand is an
+      # ordinary thing to do -- to warm the aws-sdk-cpp cache, or to run the aws
+      # backend before cutting a release -- and none of that should quietly cost
+      # money. Spending is opt-in on every route: a label on a PR, this box, or
+      # the daily cron.
+      real_kms:
+        description: also run against REAL AWS KMS (spends ~$0.13)
+        required: true
+        type: boolean
+        default: false
+      full_matrix:
+        description: real KMS - all 22 keys instead of the 8-key smoke subset
+        required: true
+        type: boolean
+        default: false
 
 # Deliberately no `paths:` filter. If this ever becomes a required status check, a
 # run skipped by a path filter never reports at all and blocks the merge.
 permissions:
   contents: read
 
+# The OLDEST OpenSSL the published artifacts are compiled against. Not a
+# preference: see B4 in TODO.txt and the long note on the build job. One value,
+# read by the build job and passed into the musl container, so the floor cannot
+# differ between targets.
+env:
+  AWSKMS_OPENSSL_FLOOR: '3.0.21'
+
+# A real-kms run is placed in its OWN group and never cancelled. This is not
+# tidiness: cancelling a run that has already created KMS keys abandons them
+# billing, which is the exact failure `queue: max` exists to prevent in the
+# reaper. Left in the ordinary PR group, the next push to the branch would
+# cancel it mid-flight.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ (github.event.action == 'labeled' && github.event.label.name == 'real-kms') && '-real-kms' || '' }}
   # Superseded PR runs are cancelled; runs on main and the schedule are not,
   # because those are the runs that populate the caches every PR reads, and a
   # cancelled job does not save its cache. This is unlike real-kms.yml, whose
   # `queue: max` exists so a cancelled run cannot abandon provisioned KMS keys --
   # nothing here touches anything outside the runner.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name == 'real-kms') }}
 
 # Actions are pinned to full commit SHAs rather than tags; .github/dependabot.yml
 # rewrites the SHA and its trailing version comment together. See the longer note
@@ -66,8 +104,7 @@ jobs:
       min: 26
 
   build:
-    needs: node-versions
-    name: build & test ${{ matrix.platform.os }} / node ${{ matrix.node-version }} / ${{ matrix.backend }}
+    name: build ${{ matrix.platform.os }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.platform.os }}
     timeout-minutes: 30
     strategy:
@@ -86,20 +123,34 @@ jobs:
         # LAST entry's values, four platforms never ran, and nothing anywhere
         # reported a problem. A real key cross-multiplies, which is the intent.
         #
-        # musl is not here: it needs a different libc, a different node source
-        # and a different runner arrangement entirely -- see the build-musl job.
+        # There is deliberately NO node axis here. Compiling does not depend on
+        # the node version at all -- measured: no node headers, libs, binary or
+        # node-gyp anywhere in the build, src/napi.c hand-declares the two N-API
+        # entry points with void*, and a logging `node` shim placed first on PATH
+        # across a fresh configure plus a full build recorded ZERO invocations.
+        # Building once per node version produced N identical binaries.
+        #
+        # It also made the release artifact WRONG in waiting: the artifact name
+        # is platform+arch with no node component, so the moment node-versions
+        # returns two entries (when Node 27 ships, 2027-04-22) two legs would
+        # upload the same name and upload-artifact would 409. The node matrix
+        # belongs on `test`, against ONE artifact -- which is also the stronger
+        # property: the bytes we publish are the bytes exercised on every
+        # supported node, rather than one build per node of which one is shipped.
+        #
+        # musl is not here either: it needs a different libc, a different node
+        # source and a different runner arrangement -- see the build-musl job.
         platform:
           - os: ubuntu-latest
           - os: ubuntu-24.04-arm
           - os: macos-latest
           - os: macos-15-intel
-        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
         # The aws backend costs a ~206 MB SDK fetch, so it is reserved for the
         # schedule, for manual runs, and for tags. workflow_dispatch means the
         # expensive legs are reachable on demand -- before a release, when
         # touching cmake/, or simply to refresh the cache. A TAG needs them
         # because they are what produce the artifacts the release job publishes.
-        backend: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -117,15 +168,13 @@ jobs:
       #
       # That version is where the OSSL_STORE loader shipped, so it is the floor by
       # definition -- there is no released node this provider runs on before it.
+      # ONE node, and only because staging asks it for platform+arch and the
+      # unpacked-archive check runs the doctor. Nothing compiled here depends on
+      # it. The floor is read from .node-version rather than written here because
+      # the test job needs the SAME value and the two must move together.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
-      - name: record the floor node
-        run: echo "AWSKMS_FLOOR_NODE=$(command -v node)" >> "$GITHUB_ENV"
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ matrix.node-version }}
 
       # libssl-dev is not optional for either backend: awskms_unit is only built
       # when find_package(OpenSSL) locates libraries, and the aws backend fails at
@@ -136,22 +185,28 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
 
-      # Two macOS-specific problems, both silent or confusing if left alone:
-      #   * homebrew's openssl@3 is keg-only and CMake's FindOpenSSL does not
-      #     search its prefix, so find_package fails without a hint. `brew
-      #     --prefix` is asked rather than hardcoded because it differs by
-      #     architecture: /opt/homebrew on arm64, /usr/local on Intel.
-      #   * /usr/bin/openssl is LibreSSL, which has no `list -providers`, so
-      #     check-load.sh's CLI probe and the HTTP KMS stub both need a real one
-      #     ahead of it on PATH.
-      - name: point at homebrew openssl
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          prefix="$(brew --prefix openssl@3)"
-          echo "OPENSSL_ROOT_DIR=$prefix" >> "$GITHUB_ENV"
-          echo "AWSKMS_OPENSSL=$prefix/bin/openssl" >> "$GITHUB_ENV"
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+      # B4: the artifact is compiled against the OLDEST supported OpenSSL, not
+      # against whatever the runner happens to ship. Every OpenSSL call in this
+      # module stays an UNDEFINED symbol and binds at dlopen to the host, so the
+      # required symbol set is a function of the build machine's HEADERS -- and
+      # vendored s2n calls EVP_MD_CTX_size, a macro that expands to
+      # EVP_MD_CTX_get_size_ex from OpenSSL 3.4 and to a pair of 3.0-era calls
+      # before it. Built on a 3.4+ runner the artifact could not dlopen on a 3.0
+      # host AT ALL, and nothing said so: no compiler warning (the macro is
+      # working as designed), no linker error (we deliberately link nothing), and
+      # the header matrix passes because each build is correct for ITS header.
+      # Compile old, run new -- measured to load on 3.0, 3.6 and 4.0.
+      - name: cache the floor openssl
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/awskms-openssl/${{ env.AWSKMS_OPENSSL_FLOOR }}
+          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
+
+      # Called unconditionally rather than behind a cache-hit flag: the script is
+      # idempotent and returns at once on a complete prefix, so a PARTIAL restore
+      # repairs itself here instead of failing later at configure.
+      - name: build the floor openssl
+        run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
 
       # The source tree only, never _deps/aws-sdk-cpp-build: object files are
       # larger than the source and a stale object tree across compiler versions is
@@ -188,6 +243,7 @@ jobs:
           # "unbound variable" error. Linux has bash 5 and does not care, so this
           # fails on exactly one leg of the matrix.
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_ROOT_DIR="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR" \
             -DAWSKMS_BACKEND=${{ matrix.backend }} ${extra[@]+"${extra[@]}"}
 
       - name: build
@@ -205,33 +261,21 @@ jobs:
       - name: unit tests
         run: ctest --test-dir build -R '^unit$' --no-tests=error --output-on-failure
 
-      # Both nodes: the floor for the symbol audit that catches trap (d), and the
-      # matrix node so a newer release is exercised too.
-      - name: check-load
-        run: scripts/check-load.sh build "$AWSKMS_FLOOR_NODE" "$(command -v node)"
-
-      # check-load.sh treats doctor exit 2 as a skip, by design -- it may be run
-      # against a node predating the STORE loader. Here 2 is fatal: this node is
-      # 26.7.0 or newer, so "cannot tell" means something is wrong.
-      - name: the provider is reachable
-        run: node --openssl-config="$PWD/build/awskms.cnf" scripts/awskms-doctor.mjs
-
-      # test/run.mjs prints an explanation and exits 0 when the node cannot pass a
-      # URL to createPrivateKey. That is right for a developer and wrong here: the
-      # node version comes from a resolving matrix, so a green no-op could appear
-      # at any time without anyone changing this file.
-      - name: end-to-end suites
+      # The assertion that closes B4. Its real content is not "we compiled
+      # against 3.0" but "the build actually USED those headers rather than
+      # whatever the runner had" -- which is the mistake that produced B4. Pure
+      # symbol arithmetic against a libcrypto already on disk: no node, no
+      # runtime host, milliseconds.
+      #
+      # Proven to catch the real thing: the shipped aws artifact built on a 3.6
+      # runner fails this with EVP_MD_CTX_get_size_ex, and the stub with
+      # EVP_PKEY_sign_message_init.
+      - name: the module stays within the openssl floor
         run: |
           set -euo pipefail
-          node test/run.mjs 2>&1 | tee /tmp/suite.log
-          if grep -q 'Skipping the end-to-end suites' /tmp/suite.log; then
-            echo "::error::the suites silently skipped -- $(node -p process.version) lacks the OSSL_STORE loader (needs >= $(cat .node-version))"
-            exit 1
-          fi
-          grep -qE '^. pass [1-9]' /tmp/suite.log || {
-            echo "::error::the suites reported no passing tests"
-            exit 1
-          }
+          mod=build/awskms.dylib; [ -f "$mod" ] || mod=build/awskms.so
+          scripts/check-symbol-floor.sh "$mod" \
+            "$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
 
       # Packaging runs here, on the aws legs, rather than only in some future
       # release workflow. A release path that fires only on a tag is first
@@ -294,21 +338,117 @@ jobs:
           path: awskms-${{ steps.stage.outputs.target }}.tar.gz
           if-no-files-found: error
 
+      # What `test` consumes. Only the outputs it actually reads -- measured as
+      # exactly five files across check-load.sh, the doctor, test/run.mjs and
+      # npm-pack.sh; none of them touches CMakeCache, the objects or awskms_unit.
+      # Named by RUNNER LABEL rather than platform+arch so the test job can
+      # reconstruct the name from its own matrix without asking node and without
+      # a mapping table to drift.
+      - name: upload the module for testing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: module-${{ matrix.platform.os }}-${{ matrix.backend }}
+          path: |
+            build/awskms.dylib
+            build/awskms.so
+            build/awskms.cnf
+            build/awskms.relocatable.cnf
+            build/awskms-backend
+            build/awskms-stub-mldsa
+          if-no-files-found: error
+
+  # Everything that depends on the NODE version, run against ONE artifact per
+  # platform rather than one build per node. That ordering is the point: the
+  # bytes published are the exact bytes exercised on every supported node.
+  test:
+    needs: [node-versions, build]
+    name: test ${{ matrix.platform.os }} / node ${{ matrix.node-version }} / ${{ matrix.backend }}
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Must stay in step with `build`'s platform list -- the artifact name is
+        # built from matrix.platform.os on both sides.
+        platform:
+          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
+          - os: macos-latest
+          - os: macos-15-intel
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The floor first, so its path is captured before the matrix node replaces
+      # it on PATH. check-load.sh takes the OLDEST supported node first: the
+      # undefined-symbol audit is only as good as the oldest host it runs
+      # against, and the matrix resolves to `current`, which is not the floor.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - name: record the floor node
+        run: echo "AWSKMS_FLOOR_NODE=$(command -v node)" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      # /usr/bin/openssl on macOS is LibreSSL, which has no `list -providers`, so
+      # check-load.sh's CLI probe and the HTTP KMS stub both need a real one
+      # ahead of it on PATH. `brew --prefix` is asked rather than hardcoded
+      # because it differs by architecture.
+      - name: point at a real openssl
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          prefix="$(brew --prefix openssl@3)"
+          echo "AWSKMS_OPENSSL=$prefix/bin/openssl" >> "$GITHUB_ENV"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - name: download the module
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: module-${{ matrix.platform.os }}-${{ matrix.backend }}
+          path: build
+
+      - name: check-load
+        run: scripts/check-load.sh build "$AWSKMS_FLOOR_NODE" "$(command -v node)"
+
+      # The RELOCATABLE cnf plus AWSKMS_MODULE, never build/awskms.cnf: that one
+      # baked in the absolute path of the machine that COMPILED it, which is a
+      # different job now. It would happen to work while both runners use the
+      # same workspace path, and fail silently the day one of them does not.
+      - name: the provider is reachable
+        run: |
+          set -euo pipefail
+          mod="$PWD/build/awskms.dylib"; [ -f "$mod" ] || mod="$PWD/build/awskms.so"
+          AWSKMS_MODULE="$mod" node --openssl-config="$PWD/build/awskms.relocatable.cnf" \
+            scripts/awskms-doctor.mjs
+
+      # run.mjs prints an explanation and exits 0 when the node cannot pass a URL
+      # to createPrivateKey. Right for a developer, wrong here: the node version
+      # comes from a resolving matrix, so a green no-op could appear at any time
+      # without anyone changing this file.
+      - name: end-to-end suites
+        run: |
+          set -euo pipefail
+          node test/run.mjs 2>&1 | tee /tmp/suite.log
+          if grep -q 'Skipping the end-to-end suites' /tmp/suite.log; then
+            echo "::error::the suites silently skipped -- $(node -p process.version) lacks the OSSL_STORE loader (needs >= $(cat .node-version))"
+            exit 1
+          fi
+          grep -qE '^. pass [1-9]' /tmp/suite.log || {
+            echo "::error::the suites reported no passing tests"
+            exit 1
+          }
+
       # The npm packages, built and USED -- packed, installed from the tarballs
       # into a throwaway project, then driven through modulePath(),
       # opensslConfigPath(), register(), the bin and the doctor. No registry is
-      # involved: `npm pack` produces exactly what a publish would upload, and
-      # installing from that tarball exercises the whole resolution path --
-      # optional dependencies, os/cpu gating, exports subpaths, require.resolve --
-      # which is the part that actually breaks. Publishing adds nothing to the
-      # test and cannot be undone.
-      #
-      # Runs on EVERY leg, not just the aws ones. What is under test here is the
-      # package plumbing, which is backend-independent -- only the artifact inside
-      # differs -- and the stub build produces both inputs it needs (the module
-      # and the relocatable cnf, which is generated unconditionally). Restricting
-      # it to aws would mean register() and the resolution logic were only ever
-      # checked on the schedule, never on the pull request that changed them.
+      # involved. This lives HERE rather than in `build` because everything it
+      # exercises -- require.resolve, exports subpaths, process.dlopen -- is
+      # node-dependent, which is exactly what this job varies.
       - name: npm packages
         run: scripts/npm-pack.sh build
 
@@ -336,7 +476,7 @@ jobs:
             arch: x64
           - os: ubuntu-24.04-arm
             arch: arm64
-        backend: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -351,6 +491,14 @@ jobs:
           path: build/_deps/aws-sdk-cpp
           key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake') }}
 
+      # The container builds the floor OpenSSL into the bind-mounted workspace
+      # so it survives the container, which is otherwise ephemeral.
+      - name: cache the floor openssl (musl)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ossl/${{ env.AWSKMS_OPENSSL_FLOOR }}
+          key: openssl-musl-${{ matrix.platform.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
+
       # The runner is glibc and stays that way: checkout, cache and
       # upload-artifact all run out here, where the runner's own node works. Only
       # the build and the tests go inside, which is the only part that needs musl.
@@ -360,14 +508,15 @@ jobs:
       # The alpine tag is a plain version pin. Dependabot cannot see it (there is
       # no Dockerfile and no docker ecosystem entry for a bare `docker run`), so
       # it is bumped by hand.
-      - name: build & test in alpine
+      - name: build in alpine
         run: |
           set -euo pipefail
           docker run --rm \
             -v "$PWD:/src" -w /src \
             -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
             alpine:3.24 \
-            ./scripts/ci-alpine.sh '${{ matrix.backend }}' '${{ matrix.platform.arch }}'
+            ./scripts/ci-alpine.sh build '${{ matrix.backend }}' \
+              '${{ matrix.platform.arch }}' '${{ env.AWSKMS_OPENSSL_FLOOR }}'
 
       - name: upload the archive
         if: matrix.backend == 'aws'
@@ -376,6 +525,225 @@ jobs:
           name: awskms-linuxmusl-${{ matrix.platform.arch }}
           path: awskms-linuxmusl-${{ matrix.platform.arch }}.tar.gz
           if-no-files-found: error
+
+      - name: upload the module for testing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: module-musl-${{ matrix.platform.arch }}-${{ matrix.backend }}
+          path: |
+            build/awskms.so
+            build/awskms.cnf
+            build/awskms.relocatable.cnf
+            build/awskms-backend
+            build/awskms-stub-mldsa
+          if-no-files-found: error
+
+  # The musl half of `test`. A separate job for the same reason build-musl is:
+  # GitHub cannot run JavaScript actions in an Alpine container on arm64, so
+  # checkout, download-artifact and the caches have to stay on a glibc host while
+  # only the test run itself goes inside. Without this job musl was the one
+  # target that never saw the node matrix at all -- it was built and tested by a
+  # single floor-pinned node, while every other target was exercised across
+  # every supported version.
+  test-musl:
+    needs: [node-versions, build-musl]
+    name: test alpine ${{ matrix.platform.arch }} / node ${{ matrix.node-version }} / ${{ matrix.backend }}
+    runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Must stay in step with build-musl -- the artifact name is built from
+        # matrix.platform.arch on both sides.
+        platform:
+          - os: ubuntu-latest
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: download the module
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: module-musl-${{ matrix.platform.arch }}-${{ matrix.backend }}
+          path: build
+
+      # The node-version here is a setup-node SPEC ("current", "lts/<codename>"),
+      # not a version number, and setup-node cannot serve musl anyway. The spec is
+      # resolved inside the container against the unofficial-builds index -- see
+      # the long note in ci-alpine.sh for why it must be resolved against THAT
+      # index and not nodejs.org/dist.
+      - name: test in alpine
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
+            alpine:3.24 \
+            ./scripts/ci-alpine.sh test '${{ matrix.backend }}' \
+              '${{ matrix.platform.arch }}' '${{ matrix.node-version }}'
+
+  # Real AWS KMS. Folded in from the former real-kms.yml, which is deleted --
+  # a separate workflow meant the money path had its own triggers, its own node
+  # pin and its own copy of the build, and it had never once run.
+  #
+  # ARMED BY A LABEL, AND ONLY BY THE LABELING EVENT ITSELF. The gate is
+  # `github.event.action == 'labeled'`, not "the label is present in the array".
+  # That makes it a genuine one-shot: a later `synchronize` cannot re-fire it,
+  # so nothing here depends on real-kms-label.yml winning a race to remove the
+  # label. Removal exists to make the label re-usable as a button -- you cannot
+  # add a label that is already there -- not to keep the run from repeating.
+  #
+  # Same-repo is required as well. The trigger is `pull_request`, NEVER
+  # `pull_request_target`, so a fork PR is not exposed to OIDC or secrets at all
+  # regardless of any `if:`; the explicit check is the second barrier. Applying a
+  # label needs write access, so the label IS the permission gate.
+  #
+  # It rebuilds rather than consuming the `build` artifact deliberately: making
+  # it `needs: build` would drag the whole 4-platform x 2-backend matrix -- three
+  # of those a 206 MB SDK fetch -- onto every press of the button, to spend money
+  # once on one platform.
+  real-kms:
+    name: real AWS KMS (spends money)
+    # ALLOW-LIST, not a deny-list. The obvious inversion --
+    # `github.event_name != 'pull_request' || (...)` -- is true for PUSH, and
+    # ci.yml runs on every push to main and on tags where the old real-kms.yml
+    # deliberately did not. That phrasing would spend money on every commit that
+    # lands. Enumerate the events that may spend instead.
+    if: >-
+      github.event.schedule == '17 4 * * *' ||
+      (github.event_name == 'workflow_dispatch' && inputs.real_kms) || (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 'real-kms'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The SAME group as real-kms-reaper.yml, so the reaper can never sweep keys a
+    # live run still needs. github.workflow is deliberately absent: the exclusion
+    # wanted here is cross-workflow. Job-level concurrency takes only `group` and
+    # `cancel-in-progress`, so the old `queue: max` cannot be expressed here --
+    # the consequence is a lossy PENDING queue, never a cancelled RUNNING one,
+    # and only a running job can abandon keys.
+    concurrency:
+      group: awskms-real-kms
+      cancel-in-progress: false
+    permissions:
+      id-token: write # to request the OIDC JWT
+      contents: read  # for actions/checkout
+    env:
+      AWS_REGION: ${{ vars.AWSKMS_TEST_REGION }}
+      SUBSET: ${{ (github.event_name == 'workflow_dispatch' && inputs.full_matrix) && '' || '--smoke' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pinned to the floor rather than the runner's default, and load-bearing in
+      # a way that is easy to miss: with the backend fixed, the next thing in line
+      # is test/run.mjs's capability probe, which prints an explanation and exits
+      # 0 on a node that cannot pass a URL to createPrivateKey. Unpinned, this
+      # would be a silent, billable no-op.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      # Mandatory for the aws backend, not defensive:
+      # S2N_ENFORCE_PROPER_LIBCRYPTO_FEATURE_PROBE=ON makes a libcrypto that
+      # cannot be linked at configure time a fatal error rather than a silently
+      # degraded s2n.
+      - name: install the build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+
+      - name: cache the floor openssl
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/awskms-openssl/${{ env.AWSKMS_OPENSSL_FLOOR }}
+          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
+
+      - name: build the floor openssl
+        run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
+
+      - name: cache the aws sdk source
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/_deps/aws-sdk-cpp
+          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake') }}
+
+      # -DAWSKMS_BACKEND=aws is required. The default is `stub`, which contains no
+      # AWS client at all, and test/run.mjs refuses AWSKMS_TEST_REAL=1 against it
+      # with exit 2 -- the bug that meant this job had never worked.
+      - name: build the provider
+        run: |
+          set -euo pipefail
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAWSKMS_BACKEND=aws \
+            -DOPENSSL_ROOT_DIR="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
+          cmake --build build --parallel
+
+      # Before spending money. A module that fails to load or leaks libcrypto is
+      # worth catching ahead of key creation, not after.
+      - name: verify the module loads
+        run: |
+          set -euo pipefail
+          scripts/check-symbol-floor.sh build/awskms.so \
+            "$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
+          scripts/check-load.sh build "$(command -v node)"
+
+      - name: assume the provisioner role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWSKMS_ADMIN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: create the keys
+        run: node scripts/real-kms-keys.mjs setup $SUBSET
+
+      # The signer role is chained INSIDE this step, keeping the admin credentials
+      # in the job environment for teardown -- a cancelled run gets only a few
+      # minutes and an action step may not start at all.
+      #
+      # Running the suite under a least-privilege principal is what makes the
+      # "only kms:Sign and kms:GetPublicKey are needed" claim testable, rather
+      # than merely true of a run whose credentials happened to be powerful.
+      - name: run the suite as the signer
+        timeout-minutes: 20
+        env:
+          SIGNER_ROLE_ARN: ${{ vars.AWSKMS_SIGNER_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          creds=$(aws sts assume-role \
+            --role-arn "$SIGNER_ROLE_ARN" \
+            --role-session-name "awskms-${GITHUB_RUN_ID}" \
+            --duration-seconds 3600 \
+            --query Credentials --output json)
+          AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$creds"); export AWS_ACCESS_KEY_ID
+          AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$creds"); export AWS_SECRET_ACCESS_KEY
+          AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$creds"); export AWS_SESSION_TOKEN
+          unset AWS_PROFILE
+          AWSKMS_TEST_REAL=1 node test/run.mjs
+
+      # always(), not !cancelled():
+      #
+      #   always()      runs on success, failure AND cancellation
+      #   !cancelled()  runs on success and failure but not on cancellation
+      #
+      # A cancelled run is precisely when keys are left behind, so !cancelled()
+      # would skip teardown in the case that matters most. A cancelled run gets
+      # about five minutes before jobs are forcibly terminated, ample for 22
+      # DescribeKey + ScheduleKeyDeletion pairs.
+      - name: schedule the keys for deletion
+        if: always()
+        timeout-minutes: 5
+        run: node scripts/real-kms-keys.mjs teardown --window 7 --sweep $SUBSET
+
+      # Surfaces leaks immediately rather than on next month's bill. Runs even if
+      # teardown failed, and never fails the job itself.
+      - name: report anything still billable
+        if: always()
+        continue-on-error: true
+        run: node scripts/real-kms-keys.mjs status $SUBSET
 
   openssl-headers:
     name: openssl ${{ matrix.version }} headers
@@ -398,40 +766,87 @@ jobs:
           path: ~/.cache/awskms-openssl/${{ matrix.version }}
           key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ matrix.version }}
 
-      # A source tarball is NOT enough to point AWSKMS_OPENSSL_INCLUDE_DIR at:
-      # OpenSSL 3.x generates around twenty headers from .h.in templates. The
-      # validation in CMakeLists.txt checks for core_dispatch.h, which is NOT
-      # generated -- so a tarball would pass that check and then fail on the first
-      # generated include. install_sw gives a complete tree plus the CLI.
+      # Called unconditionally: build-openssl.sh returns at once on a complete
+      # prefix, so a partial cache restore repairs itself rather than failing
+      # later. Same script the build job uses for the floor, so the two cannot
+      # drift -- they had already diverged into two copies once.
       - name: build openssl ${{ matrix.version }}
-        if: steps.ossl.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          v='${{ matrix.version }}'
-          prefix="$HOME/.cache/awskms-openssl/$v"
-          curl -fsSL --retry 3 -o "openssl-$v.tar.gz" \
-            "https://github.com/openssl/openssl/releases/download/openssl-$v/openssl-$v.tar.gz"
-          tar xzf "openssl-$v.tar.gz"
-          cd "openssl-$v"
-          # --libdir=lib because some Linux configurations install to lib64, which
-          # would make the cache path and find_package platform-dependent for no
-          # reason. --openssldir keeps the built CLI from reading /etc/ssl and
-          # picking up a system config that activates providers.
-          #
-          # Docs are skipped by building the `build_sw` target rather than by
-          # passing `no-docs`, which 3.0 does not accept -- measured:
-          # "***** Unsupported options: no-docs", since it arrived after 3.0.
-          # build_sw exists in all three versions, so one recipe covers the matrix
-          # with no version-conditional flags.
-          ./Configure --prefix="$prefix" --openssldir="$prefix/ssl" --libdir=lib no-tests
-          make -j"$(nproc)" build_sw
-          make install_sw
+        run: scripts/build-openssl.sh '${{ matrix.version }}'
 
       # An explicit include dir is required: with no arguments the script probes
       # homebrew then nix and exits 2 on a stock runner, and its nix path wants a
       # nodejs checkout for tools/nix/openssl-matrix.nix.
       - name: build against those headers
         run: scripts/check-openssl-matrix.sh "$HOME/.cache/awskms-openssl/${{ matrix.version }}/include"
+
+  # THE RUNTIME LANE. openssl-headers above answers "does it COMPILE against
+  # 3.0/3.5/4.0 headers"; this answers the question that actually shipped a bug:
+  # does the artifact we BUILD -- compiled once against the floor -- still LOAD
+  # against each of those OpenSSL versions?
+  #
+  # B4 lived exactly in that gap. Every header tree built clean, because each
+  # build was correct for its own header; the defect only existed when the axes
+  # were crossed. Crossing them is this job.
+  #
+  # No node is built or needed. libcrypto is the loader, not node: OpenSSL's DSO
+  # layer dlopens the module with RTLD_NOW, so every undefined symbol must
+  # resolve there or the load fails outright. The `openssl` CLI of a given
+  # version is therefore a faithful host for the entire question, and
+  # build-openssl.sh already installs one per version via install_sw. Building
+  # node --shared-openssl per version would answer the same question at roughly
+  # 112 minutes a leg, because nodejs.org binaries static-link OpenSSL.
+  openssl-runtime:
+    needs: build
+    name: openssl ${{ matrix.version }} runtime / ${{ matrix.backend }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.0.21', '3.5.7', '4.0.1']
+        backend: ${{ (github.event.schedule == '17 5 */5 * *' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')) && fromJSON('["stub","aws"]') || fromJSON('["stub"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Linux rather than a platform matrix on purpose: the module needs ~223
+      # OpenSSL symbols here against macOS's ~68, so this is the stricter host
+      # for a symbol question. A macOS artifact still gets its floor asserted in
+      # the build job.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: cache the openssl prefix
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/awskms-openssl/${{ matrix.version }}
+          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ matrix.version }}
+
+      - name: build openssl ${{ matrix.version }}
+        run: scripts/build-openssl.sh '${{ matrix.version }}'
+
+      # The artifact as built -- compiled once against the floor -- not a rebuild
+      # against this version's headers. Testing a rebuild would re-answer the
+      # compile question and miss the point entirely.
+      - name: download the module
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: module-ubuntu-latest-${{ matrix.backend }}
+          path: build
+
+      - name: does it load against openssl ${{ matrix.version }}
+        run: |
+          set -euo pipefail
+          prefix="$HOME/.cache/awskms-openssl/${{ matrix.version }}"
+          # Static first: name the missing symbols rather than only reporting
+          # that dlopen failed. On a failure this is the message that explains it.
+          scripts/check-symbol-floor.sh build/awskms.so "$prefix"
+          # Then actually load it. This CLI is the version under test, put ahead
+          # of the runner's own openssl on PATH; check-load.sh's probe resolves
+          # `openssl` from PATH and asserts the provider reports itself active.
+          export PATH="$prefix/bin:$PATH"
+          openssl version
+          scripts/check-load.sh build "$(command -v node)"
 
   lint:
     name: format & shell
@@ -469,7 +884,7 @@ jobs:
   # every schedule and dispatch rather than waiting for one.
   release:
     name: publish the release
-    needs: [build, build-musl]
+    needs: [build, build-musl, test, test-musl]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -478,8 +893,12 @@ jobs:
       id-token: write      # OIDC, for the provenance attestation
       attestations: write
     steps:
+      # `pattern` is not optional now that `build` also publishes module-*
+      # artifacts for the test job: without it merge-multiple would flatten
+      # several platforms' awskms.so on top of one another in dist/.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          pattern: awskms-*
           path: dist
           merge-multiple: true
 
