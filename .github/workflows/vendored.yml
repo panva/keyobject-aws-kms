@@ -12,6 +12,12 @@ name: vendored
 
 on:
   push:
+    # main only. Without this, `push` fires on EVERY branch -- including
+    # deps/bump, which this same workflow force-pushes weekly and whose diff
+    # touches third_party/ and update-vendored.sh, i.e. exactly the paths below.
+    # Every bump would have triggered a redundant verify on its own branch on top
+    # of the pull_request run. Branch work is already covered by `pull_request`.
+    branches: [main]
     paths:
       - 'third_party/**'
       - 'src/**'
