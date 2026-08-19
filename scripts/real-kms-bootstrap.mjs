@@ -177,9 +177,9 @@ const adminPolicy = (acct) => ({
     {
       /* Defense in depth for the cleanup script: even a programming error or a
        * hostile manifest cannot schedule an untagged account key. */
-      Sid: 'DeleteOnlyOwnedTestKeys',
+      Sid: 'ScheduleDeletionOnlyForOwnedTestKeys',
       Effect: 'Allow',
-      Action: ['kms:ScheduleKeyDeletion', 'kms:CancelKeyDeletion'],
+      Action: 'kms:ScheduleKeyDeletion',
       Resource: `arn:aws:kms:*:${acct}:key/*`,
       Condition: {
         StringEquals: { 'aws:ResourceTag/awskms-provider-test': '1' },

@@ -55,6 +55,8 @@ The bootstrap creates two roles:
 The admin role has an explicit deny for signing and other key-use operations.
 The signer role cannot provision, describe, delete, decrypt, or verify through
 KMS. This separation makes the provider's minimum IAM claim testable.
+Every run creates fresh keys. The harness never cancels pending deletion or
+reuses a key, and the admin role has no `kms:CancelKeyDeletion` permission.
 
 The runtime permission is equivalent to:
 

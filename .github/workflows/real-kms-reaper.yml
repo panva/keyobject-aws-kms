@@ -4,10 +4,10 @@
 # teardown step in ci.yml's real-kms job is not a guarantee. This sweeps every key carrying
 # the test tag and schedules deletion for any not already pending.
 #
-# Running it unconditionally is safe because deletion is never cancelled in this
-# design: a key a test run still needs would be scheduled here, but scheduling is
-# reversible for seven days and re-running setup restores it. The alternative,
-# keys billing indefinitely after a lost runner, is worse.
+# The harness never cancels deletion or reuses a key. If a sweep catches a key
+# that a test run still needs, that run is abandoned and a later setup creates a
+# fresh key. The alternative, keys billing indefinitely after a lost runner, is
+# worse.
 #
 # The accepted wart: a local run overlapping this job sees its keys scheduled and
 # starts failing, and is repaired by re-running setup.
@@ -43,4 +43,4 @@ jobs:
 
       # Orphans only: tagged keys that are not already pending deletion.
       - name: find every tagged key and schedule the strays
-        run: node scripts/real-kms-keys.mjs reap --window 7
+        run: node scripts/real-kms-keys.mjs reap --window 7 --json

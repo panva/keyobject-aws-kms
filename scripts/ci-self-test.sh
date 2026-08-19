@@ -44,6 +44,12 @@ if grep -Eq 'gcc -print-file-name=lib(asan|ubsan)\.so([")])' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'LD_PRELOAD must use sanitizer runtime DSOs, not linker scripts'
 fi
+if grep -Fq 'kms:CancelKeyDeletion' "$repo/scripts/real-kms-bootstrap.mjs"; then
+  fail 'the test harness must not receive permission to recover keys pending deletion'
+fi
+if grep -Fq 'cancel-key-deletion' "$repo/scripts/real-kms-keys.mjs"; then
+  fail 'the test harness must not recover or reuse keys pending deletion'
+fi
 if grep -Fq 'archive="node-v$version-linux-$machine.tar.xz"' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'Node archive names must not use uname architecture names'
