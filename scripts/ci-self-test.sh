@@ -20,20 +20,39 @@ grep -Fq 'machine=aarch64' "$repo/scripts/ci-alma.sh"
 grep -Fq 'node_arch=arm64' "$repo/scripts/ci-alma.sh"
 grep -Fq 'archive="node-v$version-linux-$node_arch.tar.xz"' \
   "$repo/scripts/ci-alma.sh"
-awk '
-  $0 == "dnf -q -y install \\" { packages = 1; next }
-  packages {
-    for (field = 1; field <= NF; field++) {
-      if ($field == "libatomic") found = 1
+assert_dnf_package() {
+  local package=$1
+
+  awk -v package="$package" '
+    /^[[:space:]]*dnf -q -y install \\$/ { packages = 1; next }
+    packages {
+      for (field = 1; field <= NF; field++) {
+        if ($field == package) found = 1
+      }
+      if ($0 !~ /\\$/) packages = 0
     }
-    if ($0 !~ /\\$/) exit(found ? 0 : 1)
-  }
-  END { if (!found) exit 1 }
-' "$repo/scripts/ci-alma.sh"
+    END { exit(found ? 0 : 1) }
+  ' "$repo/scripts/ci-alma.sh" || fail "AlmaLinux does not install $package"
+}
+
+assert_dnf_package libatomic
+assert_dnf_package gcc-toolset-13-libasan-devel-13.3.1-2.2.el8_10
+assert_dnf_package gcc-toolset-13-libubsan-devel-13.3.1-2.2.el8_10
 if grep -Fq 'archive="node-v$version-linux-$machine.tar.xz"' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'Node archive names must not use uname architecture names'
 fi
+
+# TAP's informational prefix is multibyte. Match the ASCII summary suffix so
+# the assertion remains valid under the C locale used by AlmaLinux containers.
+printf 'ℹ pass 300\n' > "$temporary/suite.log"
+LC_ALL=C grep -qE ' pass [1-9][0-9]*$' "$temporary/suite.log"
+for source in "$repo/scripts/ci-alma.sh" "$repo/scripts/ci-alpine.sh" \
+  "$repo/.github/workflows/ci.yml"; do
+  if grep -Fq "'^. pass [1-9]'" "$source"; then
+    fail "locale-sensitive TAP summary check remains in $source"
+  fi
+done
 
 make_artifact() {
   local name=$1

@@ -234,7 +234,7 @@ test)
     echo "::error::the suites silently skipped -- $(node -p process.version) lacks the OSSL_STORE loader (needs >= $(cat .node-version))"
     exit 1
   fi
-  grep -qE '^. pass [1-9]' /tmp/suite.log || {
+  grep -qE ' pass [1-9][0-9]*$' /tmp/suite.log || {
     echo "::error::the suites reported no passing tests"
     exit 1
   }

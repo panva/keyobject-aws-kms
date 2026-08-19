@@ -29,6 +29,11 @@ dnf -q -y install \
   gcc-toolset-13-gcc-13.3.1-2.2.el8_10 \
   gcc-toolset-13-gcc-c++-13.3.1-2.2.el8_10 \
   gcc-toolset-13-libstdc++-devel-13.3.1-2.2.el8_10
+if [[ $phase == sanitize ]]; then
+  dnf -q -y install \
+    gcc-toolset-13-libasan-devel-13.3.1-2.2.el8_10 \
+    gcc-toolset-13-libubsan-devel-13.3.1-2.2.el8_10
+fi
 
 # shellcheck disable=SC1091
 source /opt/rh/gcc-toolset-13/enable
@@ -181,7 +186,7 @@ case "$phase" in
 
     /tmp/node-test/bin/node test/run.mjs 2>&1 | tee /tmp/suite.log
     ! grep -q 'Skipping the end-to-end suites' /tmp/suite.log
-    grep -qE '^. pass [1-9]' /tmp/suite.log
+    grep -qE ' pass [1-9][0-9]*$' /tmp/suite.log
     grep -F '✔ explicit provider unload leaves the host process usable' /tmp/suite.log
     if [[ $backend == aws ]]; then scripts/npm-pack.sh build; fi
     ;;
@@ -192,6 +197,14 @@ case "$phase" in
     install_node "$argument" /tmp/node-sanitize
     export PATH="/tmp/node-sanitize/bin:$openssl_prefix/bin:$PATH"
     export LD_LIBRARY_PATH="$openssl_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+    for runtime in libasan_preinit.o libasan.so libubsan.so; do
+      runtime_path=$(gcc -print-file-name="$runtime")
+      [[ $runtime_path != "$runtime" && -f $runtime_path ]] || {
+        echo "error: GCC sanitizer runtime is missing: $runtime" >&2
+        exit 1
+      }
+    done
 
     sanitizer_flags='-fsanitize=address,undefined -fno-omit-frame-pointer'
     cmake -S . -B build-sanitized -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -218,7 +231,7 @@ case "$phase" in
     AWSKMS_MODULE="$PWD/build-sanitized/aws-kms.so" \
       /tmp/node-sanitize/bin/node test/run.mjs 2>&1 | tee /tmp/sanitizer-suite.log
     ! grep -q 'Skipping the end-to-end suites' /tmp/sanitizer-suite.log
-    grep -qE '^. pass [1-9]' /tmp/sanitizer-suite.log
+    grep -qE ' pass [1-9][0-9]*$' /tmp/sanitizer-suite.log
     ;;
 
   *)

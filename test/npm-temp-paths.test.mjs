@@ -217,12 +217,13 @@ async function workerMain() {
 
 function runChild(operation, coreEntry, tmpDirectory, prepare) {
   return new Promise((resolveChild, rejectChild) => {
+    const needsPreparation = prepare !== undefined;
     const child = spawn(
       process.execPath,
       [fileURLToPath(fixturePath), childMarker, operation, coreEntry],
       {
         env: { ...process.env, TMPDIR: tmpDirectory },
-        stdio: ['pipe', 'pipe', 'pipe'],
+        stdio: [needsPreparation ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       },
     );
     let stdout = '';
@@ -234,15 +235,17 @@ function runChild(operation, coreEntry, tmpDirectory, prepare) {
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
     child.on('error', rejectChild);
-    child.on('spawn', async () => {
-      try {
-        await prepare?.(child.pid);
-        child.stdin.end('\n');
-      } catch (error) {
-        preparationError = error;
-        child.kill();
-      }
-    });
+    if (needsPreparation) {
+      child.on('spawn', async () => {
+        try {
+          await prepare(child.pid);
+          child.stdin.end('\n');
+        } catch (error) {
+          preparationError = error;
+          child.kill();
+        }
+      });
+    }
     child.on('close', (code, signal) => {
       if (preparationError !== undefined) {
         rejectChild(preparationError);

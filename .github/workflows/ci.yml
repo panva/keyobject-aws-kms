@@ -311,7 +311,7 @@ jobs:
           AWSKMS_UNLOAD_HARNESS="$PWD/build/awskms_provider_unload" \
             node test/run.mjs 2>&1 | tee /tmp/suite.log
           ! grep -q 'Skipping the end-to-end suites' /tmp/suite.log
-          grep -qE '^. pass [1-9]' /tmp/suite.log
+          grep -qE ' pass [1-9][0-9]*$' /tmp/suite.log
           grep -F '✔ explicit provider unload leaves the host process usable' /tmp/suite.log
           if [ '${{ matrix.backend }}' = aws ]; then scripts/npm-pack.sh build; fi
 
