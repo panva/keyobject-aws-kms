@@ -1,0 +1,35 @@
+{
+  "name": "@keyobject/aws-kms-@TARGET@",
+  "version": "@VERSION@",
+  "description": "Prebuilt awskms OpenSSL provider for @TARGET@",
+  "author": "Filip Skokan",
+  "license": "MIT",
+  "engines": {
+    "node": ">=26.7.0"
+  },
+  "os": ["@OS@"],
+  "cpu": ["@CPU@"],
+  "libc": @LIBC@,
+  "files": [
+    "@MODULE@",
+    "awskms.cnf",
+    "THIRD_PARTY_NOTICES.md",
+    "third_party/"
+  ],
+  "exports": {
+    "./@MODULE@": "./@MODULE@",
+    "./awskms.cnf": "./awskms.cnf",
+    "./package.json": "./package.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panva/keyobject-aws-kms.git"
+  },
+  "homepage": "https://github.com/panva/keyobject-aws-kms#readme",
+  "bugs": {
+    "url": "https://github.com/panva/keyobject-aws-kms/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

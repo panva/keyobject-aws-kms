@@ -1,0 +1,64 @@
+{
+  "name": "@keyobject/aws-kms",
+  "version": "0.0.0",
+  "description": "Use AWS KMS asymmetric signing keys from Node.js crypto, via an OpenSSL provider",
+  "keywords": [
+    "aws",
+    "kms",
+    "openssl",
+    "crypto",
+    "keyobject"
+  ],
+  "author": "Filip Skokan",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./register": {
+      "types": "./register.d.ts",
+      "default": "./register.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./index.d.ts",
+  "bin": {
+    "keyobject-aws-kms": "./bin/awskms.js"
+  },
+  "files": [
+    "index.js",
+    "register.js",
+    "register.d.ts",
+    "index.d.ts",
+    "bin/",
+    "check.mjs"
+  ],
+  "engines": {
+    "node": ">=26.7.0"
+  },
+  "optionalDependencies": {
+    "@keyobject/aws-kms-darwin-arm64": "0.0.0",
+    "@keyobject/aws-kms-darwin-x64": "0.0.0",
+    "@keyobject/aws-kms-linux-arm64": "0.0.0",
+    "@keyobject/aws-kms-linux-x64": "0.0.0",
+    "@keyobject/aws-kms-linuxmusl-arm64": "0.0.0",
+    "@keyobject/aws-kms-linuxmusl-x64": "0.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panva/keyobject-aws-kms.git",
+    "directory": "npm/core"
+  },
+  "homepage": "https://github.com/panva/keyobject-aws-kms#readme",
+  "bugs": {
+    "url": "https://github.com/panva/keyobject-aws-kms/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": [
+    "./register.js"
+  ]
+}

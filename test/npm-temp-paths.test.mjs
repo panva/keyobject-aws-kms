@@ -1,0 +1,546 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  cpSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import test from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  isMainThread,
+  parentPort,
+  threadId,
+  Worker,
+  workerData,
+} from 'node:worker_threads';
+
+const fixturePath = new URL(import.meta.url);
+const childMarker = '--npm-temp-child';
+
+function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function mode(stat) {
+  return stat.mode & 0o7777;
+}
+
+function inspectFile(path) {
+  const stat = lstatSync(path);
+  return {
+    path,
+    mode: mode(stat),
+    regular: stat.isFile(),
+    symlink: stat.isSymbolicLink(),
+    nlink: stat.nlink,
+    size: stat.size,
+    digest: stat.isFile() ? sha256(readFileSync(path)) : undefined,
+  };
+}
+
+function serialiseError(error) {
+  return {
+    name: error?.name,
+    code: error?.code,
+    message: error?.message ?? String(error),
+    stack: error?.stack,
+  };
+}
+
+async function snapshotRuntime(coreEntry) {
+  const runtime = await import(pathToFileURL(coreEntry).href);
+  const firstModule = runtime.modulePath();
+  const secondModule = runtime.modulePath();
+  const firstConfig = runtime.opensslConfigPath();
+  const secondConfig = runtime.opensslConfigPath();
+  const privateDirectory = dirname(firstConfig);
+  const directoryStat = lstatSync(privateDirectory);
+  const rendezvousRoot = dirname(privateDirectory);
+  const rendezvousStat = lstatSync(rendezvousRoot);
+  const configText = readFileSync(firstConfig, 'utf8');
+
+  return {
+    pid: process.pid,
+    threadId,
+    module: inspectFile(firstModule),
+    moduleStable: firstModule === secondModule,
+    config: inspectFile(firstConfig),
+    configStable: firstConfig === secondConfig,
+    privateDirectory,
+    privateDirectoryMode: mode(directoryStat),
+    privateDirectoryIsDirectory: directoryStat.isDirectory(),
+    privateDirectoryIsSymlink: directoryStat.isSymbolicLink(),
+    rendezvousRoot,
+    rendezvousRootMode: mode(rendezvousStat),
+    rendezvousRootIsDirectory: rendezvousStat.isDirectory(),
+    rendezvousRootIsSymlink: rendezvousStat.isSymbolicLink(),
+    configContainsTemplateToken: configText.includes('$ENV::AWSKMS_MODULE'),
+    configContainsModuleBasename: configText.includes(basename(firstModule)),
+  };
+}
+
+async function expectMutationFailure(coreEntry, mutation) {
+  const runtime = await import(pathToFileURL(coreEntry).href);
+  const config = runtime.opensslConfigPath();
+  const directory = dirname(config);
+  let restore;
+
+  switch (mutation) {
+    case 'directory-mode':
+      chmodSync(directory, 0o755);
+      restore = () => chmodSync(directory, 0o700);
+      break;
+    case 'config-mode':
+      chmodSync(config, 0o600);
+      restore = () => chmodSync(config, 0o400);
+      break;
+    case 'directory-symlink': {
+      const saved = `${directory}.saved`;
+      renameSync(directory, saved);
+      symlinkSync(saved, directory, 'dir');
+      restore = () => {
+        unlinkSync(directory);
+        renameSync(saved, directory);
+      };
+      break;
+    }
+    case 'config-symlink': {
+      const saved = `${config}.saved`;
+      renameSync(config, saved);
+      symlinkSync(saved, config, 'file');
+      restore = () => {
+        unlinkSync(config);
+        renameSync(saved, config);
+      };
+      break;
+    }
+    case 'config-content': {
+      const original = readFileSync(config);
+      const changed = Buffer.from(original);
+      changed[0] ^= 1;
+      chmodSync(config, 0o600);
+      writeFileSync(config, changed);
+      chmodSync(config, 0o400);
+      restore = () => {
+        chmodSync(config, 0o600);
+        writeFileSync(config, original);
+        chmodSync(config, 0o400);
+      };
+      break;
+    }
+    case 'module-content': {
+      const module = runtime.modulePath();
+      assert.equal(dirname(module), directory, 'module-content requires an archive copy');
+      const original = readFileSync(module);
+      const changed = Buffer.from(original);
+      changed[0] ^= 1;
+      chmodSync(module, 0o700);
+      writeFileSync(module, changed);
+      chmodSync(module, 0o500);
+      restore = () => {
+        chmodSync(module, 0o700);
+        writeFileSync(module, original);
+        chmodSync(module, 0o500);
+      };
+      break;
+    }
+    default:
+      throw new Error(`unknown mutation: ${mutation}`);
+  }
+
+  try {
+    runtime.opensslConfigPath();
+  } catch (error) {
+    return serialiseError(error);
+  } finally {
+    restore();
+  }
+  throw new Error(`${mutation} was silently accepted`);
+}
+
+async function childMain() {
+  const [, , , operation, coreEntry] = process.argv;
+  try {
+    let value;
+    if (operation === 'wait-snapshot') {
+      await new Promise((resolveInput) => process.stdin.once('data', resolveInput));
+      value = await snapshotRuntime(coreEntry);
+    } else if (operation === 'snapshot') {
+      value = await snapshotRuntime(coreEntry);
+    } else if (operation === 'worker-batch') {
+      value = await Promise.all(Array.from(
+        { length: 32 },
+        () => runWorker(coreEntry, process.env.TMPDIR),
+      ));
+    } else if (operation === 'snapshot-error') {
+      try {
+        await snapshotRuntime(coreEntry);
+        value = { code: 'SILENT' };
+      } catch (error) {
+        value = serialiseError(error);
+      }
+    } else if (operation.startsWith('mutate:')) {
+      value = await expectMutationFailure(coreEntry, operation.slice('mutate:'.length));
+    } else {
+      throw new Error(`unknown child operation: ${operation}`);
+    }
+    process.stdout.write(`${JSON.stringify({ ok: true, value })}\n`);
+  } catch (error) {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: serialiseError(error) })}\n`);
+    process.exitCode = 1;
+  }
+}
+
+async function workerMain() {
+  try {
+    process.env.TMPDIR = workerData.tmpDirectory;
+    const value = await snapshotRuntime(workerData.coreEntry);
+    parentPort.postMessage({ ok: true, value });
+  } catch (error) {
+    parentPort.postMessage({ ok: false, error: serialiseError(error) });
+  } finally {
+    parentPort.close();
+  }
+}
+
+function runChild(operation, coreEntry, tmpDirectory, prepare) {
+  return new Promise((resolveChild, rejectChild) => {
+    const child = spawn(
+      process.execPath,
+      [fileURLToPath(fixturePath), childMarker, operation, coreEntry],
+      {
+        env: { ...process.env, TMPDIR: tmpDirectory },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+    let stdout = '';
+    let stderr = '';
+    let preparationError;
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', rejectChild);
+    child.on('spawn', async () => {
+      try {
+        await prepare?.(child.pid);
+        child.stdin.end('\n');
+      } catch (error) {
+        preparationError = error;
+        child.kill();
+      }
+    });
+    child.on('close', (code, signal) => {
+      if (preparationError !== undefined) {
+        rejectChild(preparationError);
+        return;
+      }
+      const output = stdout.trim();
+      let result;
+      try {
+        result = JSON.parse(output);
+      } catch (error) {
+        rejectChild(new Error(
+          `child produced invalid JSON (code=${code}, signal=${signal}): ${output}\n${stderr}`,
+          { cause: error },
+        ));
+        return;
+      }
+      if (code !== 0 || !result.ok) {
+        const reportedError = JSON.stringify(result.error);
+        rejectChild(new Error(
+          `child failed (code=${code}, signal=${signal}): ${reportedError}\n${stderr}`,
+        ));
+        return;
+      }
+      resolveChild(result.value);
+    });
+  });
+}
+
+function runWorker(coreEntry, tmpDirectory) {
+  return new Promise((resolveWorker, rejectWorker) => {
+    const worker = new Worker(fixturePath, {
+      workerData: { awskmsTempWorker: true, coreEntry, tmpDirectory },
+    });
+    let result;
+    worker.on('message', (message) => { result = message; });
+    worker.on('error', rejectWorker);
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        rejectWorker(new Error(`worker exited with code ${code}`));
+      } else if (result === undefined) {
+        rejectWorker(new Error('worker exited without reporting a result'));
+      } else if (!result.ok) {
+        rejectWorker(new Error(`worker failed: ${JSON.stringify(result.error)}`));
+      } else {
+        resolveWorker(result.value);
+      }
+    });
+  });
+}
+
+function assertRuntimeSnapshot(snapshot, tmpDirectory) {
+  assert.equal(snapshot.moduleStable, true);
+  assert.equal(snapshot.configStable, true);
+  assert.equal(snapshot.privateDirectoryIsDirectory, true);
+  assert.equal(snapshot.privateDirectoryIsSymlink, false);
+  assert.equal(snapshot.privateDirectoryMode, 0o700);
+  assert.equal(snapshot.rendezvousRootIsDirectory, true);
+  assert.equal(snapshot.rendezvousRootIsSymlink, false);
+  assert.equal(snapshot.rendezvousRootMode, 0o700);
+  assert.equal(snapshot.rendezvousRoot,
+    join(tmpDirectory, `keyobject-aws-kms-${process.getuid()}`));
+  assert.equal(dirname(snapshot.rendezvousRoot), tmpDirectory);
+  assert.equal(snapshot.config.mode, 0o400);
+  assert.equal(snapshot.config.regular, true);
+  assert.equal(snapshot.config.symlink, false);
+  assert.equal(snapshot.config.nlink, 1);
+  assert.equal(snapshot.configContainsTemplateToken, false);
+  assert.equal(snapshot.configContainsModuleBasename, true);
+  assert.equal(snapshot.config.path, join(snapshot.privateDirectory, 'awskms.cnf'));
+}
+
+function createPrecreatedEntries(tmpDirectory, pid) {
+  const rendezvousRoot = join(tmpDirectory, `keyobject-aws-kms-${process.getuid()}`);
+  mkdirSync(rendezvousRoot, { mode: 0o700 });
+  chmodSync(rendezvousRoot, 0o700);
+  const prefix = join(rendezvousRoot, `runtime-${pid}`);
+  const legacy = prefix;
+  const safeDirectory = `${prefix}-AAAAAA`;
+  const unsafeDirectory = `${prefix}-BBBBBB`;
+  const regularFile = `${prefix}-CCCCCC`;
+  const symlink = `${prefix}-DDDDDD`;
+  const symlinkTarget = join(tmpDirectory, `attacker-target-${pid}`);
+  const sentinels = new Map([
+    [join(legacy, 'awskms.cnf'), 'legacy-predictable-directory'],
+    [join(safeDirectory, 'awskms.cnf'), 'precreated-safe-mode-directory'],
+    [join(unsafeDirectory, 'awskms.cnf'), 'precreated-wrong-mode-directory'],
+    [join(symlinkTarget, 'awskms.cnf'), 'symlink-target-directory'],
+  ]);
+
+  for (const directory of [legacy, safeDirectory, unsafeDirectory, symlinkTarget]) {
+    mkdirSync(directory, { mode: 0o700 });
+  }
+  chmodSync(legacy, 0o700);
+  chmodSync(safeDirectory, 0o700);
+  chmodSync(unsafeDirectory, 0o777);
+  chmodSync(symlinkTarget, 0o700);
+  for (const [path, contents] of sentinels) writeFileSync(path, contents, { mode: 0o600 });
+  writeFileSync(regularFile, 'precreated-regular-file', { mode: 0o600 });
+  symlinkSync(symlinkTarget, symlink, 'dir');
+
+  return {
+    rendezvousRoot,
+    legacy,
+    safeDirectory,
+    unsafeDirectory,
+    regularFile,
+    symlink,
+    symlinkTarget,
+    sentinels,
+  };
+}
+
+function assertPrecreatedEntriesUnchanged(entries) {
+  assert.equal(mode(lstatSync(entries.rendezvousRoot)), 0o700);
+  assert.equal(mode(lstatSync(entries.legacy)), 0o700);
+  assert.equal(mode(lstatSync(entries.safeDirectory)), 0o700);
+  assert.equal(mode(lstatSync(entries.unsafeDirectory)), 0o777);
+  assert.equal(lstatSync(entries.regularFile).isFile(), true);
+  assert.equal(readFileSync(entries.regularFile, 'utf8'), 'precreated-regular-file');
+  assert.equal(lstatSync(entries.symlink).isSymbolicLink(), true);
+  assert.equal(readlinkSync(entries.symlink), entries.symlinkTarget);
+  for (const [path, contents] of entries.sentinels) {
+    assert.equal(readFileSync(path, 'utf8'), contents);
+  }
+}
+
+async function expectIntegrityFailure(operation, coreEntry, tmpDirectory) {
+  const error = await runChild(`mutate:${operation}`, coreEntry, tmpDirectory);
+  assert.equal(error.code, 'ERR_AWSKMS_TEMP_INTEGRITY', `${operation}: ${error.message}`);
+}
+
+function unique(values) {
+  return new Set(values).size;
+}
+
+if (!isMainThread && workerData?.awskmsTempWorker) {
+  await workerMain();
+} else if (process.argv[2] === childMarker) {
+  await childMain();
+} else {
+  test('npm runtime uses private, race-safe temporary paths', { timeout: 120_000 }, async (t) => {
+    const app = process.env.AWSKMS_NPM_TEST_APP;
+    const target = process.env.AWSKMS_NPM_TEST_TARGET;
+    const nativeModuleName = process.env.AWSKMS_NPM_TEST_MODULE;
+    const testRoot = process.env.AWSKMS_NPM_TEST_ROOT;
+    if (!app || !target || !nativeModuleName || !testRoot) {
+      t.skip('runs from scripts/npm-pack.sh with a packed installation');
+      return;
+    }
+    assert.ok(app, 'AWSKMS_NPM_TEST_APP is required');
+    assert.ok(target, 'AWSKMS_NPM_TEST_TARGET is required');
+    assert.ok(nativeModuleName, 'AWSKMS_NPM_TEST_MODULE is required');
+    assert.ok(testRoot, 'AWSKMS_NPM_TEST_ROOT is required');
+
+    const corePackage = resolve(app, 'node_modules/@keyobject/aws-kms');
+    const satellitePackage = resolve(app, `node_modules/@keyobject/aws-kms-${target}`);
+    const coreEntry = join(corePackage, 'index.js');
+    const nativeModule = join(satellitePackage, nativeModuleName);
+    assert.equal(lstatSync(coreEntry).isFile(), true);
+    assert.equal(lstatSync(nativeModule).isFile(), true);
+
+    mkdirSync(resolve(testRoot), { recursive: true, mode: 0o700 });
+    chmodSync(resolve(testRoot), 0o700);
+    const runRoot = mkdtempSync(join(resolve(testRoot), 'run-'));
+    t.after(() => rmSync(runRoot, { recursive: true, force: true }));
+    const sharedTmp = join(runRoot, 'shared-tmp');
+    mkdirSync(sharedTmp, { mode: 0o700 });
+    chmodSync(sharedTmp, 0o1777);
+    process.env.TMPDIR = sharedTmp;
+
+    await t.test('ignores precreated PID paths, symlinks, files, and sentinels', async () => {
+      let entries;
+      const snapshot = await runChild('wait-snapshot', coreEntry, sharedTmp, (pid) => {
+        entries = createPrecreatedEntries(sharedTmp, pid);
+      });
+      assertRuntimeSnapshot(snapshot, sharedTmp);
+      assert.match(basename(snapshot.privateDirectory),
+        new RegExp(`^runtime-${snapshot.pid}-[a-f0-9]{64}-[A-Za-z0-9]{6}$`, 'u'));
+      assert.notEqual(snapshot.privateDirectory, entries.legacy);
+      assert.notEqual(snapshot.privateDirectory, entries.safeDirectory);
+      assert.notEqual(snapshot.privateDirectory, entries.unsafeDirectory);
+      assert.notEqual(snapshot.privateDirectory, entries.regularFile);
+      assert.notEqual(snapshot.privateDirectory, entries.symlink);
+      assertPrecreatedEntriesUnchanged(entries);
+    });
+
+    await t.test('rejects unsafe predictable rendezvous roots without clobbering', async () => {
+      for (const kind of ['file', 'symlink', 'wrong-mode']) {
+        const scenarioTmp = join(runRoot, `unsafe-root-${kind}`);
+        mkdirSync(scenarioTmp, { mode: 0o700 });
+        const root = join(scenarioTmp, `keyobject-aws-kms-${process.getuid()}`);
+        const sentinel = `sentinel-${kind}`;
+        let sentinelPath = root;
+
+        if (kind === 'file') {
+          writeFileSync(root, sentinel, { mode: 0o600 });
+        } else if (kind === 'symlink') {
+          const target = `${root}-target`;
+          mkdirSync(target, { mode: 0o700 });
+          sentinelPath = join(target, 'sentinel');
+          writeFileSync(sentinelPath, sentinel, { mode: 0o600 });
+          symlinkSync(target, root, 'dir');
+        } else {
+          mkdirSync(root, { mode: 0o700 });
+          chmodSync(root, 0o755);
+          sentinelPath = join(root, 'sentinel');
+          writeFileSync(sentinelPath, sentinel, { mode: 0o600 });
+        }
+
+        const error = await runChild('snapshot-error', coreEntry, scenarioTmp);
+        assert.equal(error.code, 'ERR_AWSKMS_TEMP_INTEGRITY', `${kind}: ${error.message}`);
+        assert.equal(readFileSync(sentinelPath, 'utf8'), sentinel);
+        if (kind === 'symlink') assert.equal(lstatSync(root).isSymbolicLink(), true);
+        if (kind === 'wrong-mode') assert.equal(mode(lstatSync(root)), 0o755);
+      }
+    });
+
+    await t.test('rejects changed modes, symlink replacement, and content tampering', async () => {
+      for (const operation of [
+        'directory-mode',
+        'config-mode',
+        'directory-symlink',
+        'config-symlink',
+        'config-content',
+      ]) {
+        await expectIntegrityFailure(operation, coreEntry, sharedTmp);
+      }
+    });
+
+    await t.test('creates unique private paths across 32 processes', async () => {
+      const snapshots = await Promise.all(Array.from(
+        { length: 32 },
+        () => runChild('snapshot', coreEntry, sharedTmp),
+      ));
+      for (const snapshot of snapshots) assertRuntimeSnapshot(snapshot, sharedTmp);
+      assert.equal(unique(snapshots.map(({ pid }) => pid)), 32);
+      assert.equal(unique(snapshots.map(({ privateDirectory }) => privateDirectory)), 32);
+      assert.equal(unique(snapshots.map(({ config }) => config.path)), 32);
+    });
+
+    await t.test('shares one private path across 32 Workers in one process', async () => {
+      const snapshots = await Promise.all(Array.from(
+        { length: 32 },
+        () => runWorker(coreEntry, sharedTmp),
+      ));
+      for (const snapshot of snapshots) assertRuntimeSnapshot(snapshot, sharedTmp);
+      assert.equal(unique(snapshots.map(({ pid }) => pid)), 1);
+      assert.equal(unique(snapshots.map(({ threadId }) => threadId)), 32);
+      assert.equal(unique(snapshots.map(({ privateDirectory }) => privateDirectory)), 1);
+      assert.equal(unique(snapshots.map(({ config }) => config.path)), 1);
+    });
+
+    await t.test(
+      'copies a Yarn PnP-style archive module to a private executable file',
+      async () => {
+        const archiveScope = join(
+          runRoot, 'yarn-cache', 'pkg-hash.zip', 'node_modules', '@keyobject');
+        const archiveCore = join(archiveScope, 'aws-kms');
+        const archiveSatellite = join(archiveScope, `aws-kms-${target}`);
+        mkdirSync(archiveScope, { recursive: true });
+        cpSync(corePackage, archiveCore, { recursive: true });
+        cpSync(satellitePackage, archiveSatellite, { recursive: true });
+        const archiveEntry = join(archiveCore, 'index.js');
+        const archiveModule = join(archiveSatellite, nativeModuleName);
+        assert.equal(archiveModule.includes('/pkg-hash.zip/'), true);
+        const original = inspectFile(archiveModule);
+
+        const snapshot = await runChild('snapshot', archiveEntry, sharedTmp);
+        assertRuntimeSnapshot(snapshot, sharedTmp);
+        assert.notEqual(snapshot.module.path, archiveModule);
+        assert.equal(snapshot.module.path.includes('.zip/'), false);
+        assert.equal(dirname(snapshot.module.path), snapshot.privateDirectory);
+        assert.equal(basename(snapshot.module.path), nativeModuleName);
+        assert.equal(snapshot.module.mode, 0o500);
+        assert.equal(snapshot.module.regular, true);
+        assert.equal(snapshot.module.symlink, false);
+        assert.equal(snapshot.module.nlink, 1);
+        assert.equal(snapshot.module.size, original.size);
+        assert.equal(snapshot.module.digest, original.digest);
+        assert.deepEqual(inspectFile(archiveModule), original);
+
+        /* Use a fresh process because one process intentionally has one
+         * authoritative config; importing a second installation with different
+         * module bytes must fail integrity validation instead of replacing it. */
+        const workerSnapshots = await runChild('worker-batch', archiveEntry, sharedTmp);
+        for (const workerSnapshot of workerSnapshots) {
+          assertRuntimeSnapshot(workerSnapshot, sharedTmp);
+          assert.equal(workerSnapshot.module.path.includes('.zip/'), false);
+          assert.equal(dirname(workerSnapshot.module.path), workerSnapshot.privateDirectory);
+          assert.equal(workerSnapshot.module.mode, 0o500);
+          assert.equal(workerSnapshot.module.digest, original.digest);
+        }
+        assert.equal(unique(workerSnapshots.map(({ privateDirectory }) => privateDirectory)), 1);
+        assert.equal(unique(workerSnapshots.map(({ module }) => module.path)), 1);
+        assert.equal(unique(workerSnapshots.map(({ config }) => config.path)), 1);
+
+        await expectIntegrityFailure('module-content', archiveEntry, sharedTmp);
+      },
+    );
+  });
+}

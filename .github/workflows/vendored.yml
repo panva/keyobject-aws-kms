@@ -1,0 +1,138 @@
+# Dependabot cannot cover the vendored amalgamation in third_party/ or tags
+# pinned in CMake, so this workflow provides both checks:
+#
+#   verify  proves the tree is the release the manifest claims it is
+#   bump    opens ONE pull request moving every pinned dependency to its latest
+name: vendored sources and dependency bumps
+
+on:
+  push:
+    # main only. Without this, `push` fires on EVERY branch -- including
+    # deps/bump, which this same workflow force-pushes weekly and whose diff
+    # touches third_party/ and update-vendored.sh, i.e. exactly the paths below.
+    # Every bump would have triggered a redundant verify on its own branch on top
+    # of the pull_request run. Branch work is already covered by `pull_request`.
+    branches: [main]
+    paths:
+      - 'third_party/**'
+      - 'src/**'
+      - 'scripts/update-vendored.sh'
+      - '.github/workflows/vendored.yml'
+  pull_request:
+    # ready_for_review, because the weekly bump PR is opened as a DRAFT. Without
+    # it, marking that PR ready never runs `verify` -- so the one PR this
+    # workflow itself creates was the one PR it never checked.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'third_party/**'
+      - 'src/**'
+      - 'scripts/update-vendored.sh'
+      - '.github/workflows/vendored.yml'
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # src/** is in the path filter because the API-surface half of `verify` reads
+  # src/, so a new ada_* call has to be checked against the vendored header even
+  # when third_party/ itself is untouched.
+  verify:
+    name: vendored sources match upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: every vendored file is byte-identical to its release
+        run: scripts/update-vendored.sh verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # The branch is derived state and is regenerated from main on every run.
+  bump:
+    name: bump pinned dependencies
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write        # push the branch
+      pull-requests: write   # open it the first time
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: bump every pinned dependency
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # -B resets the branch to main even if it already exists locally.
+          git checkout -qB deps/bump
+          # Three outcomes: 0 = changed, 3 = current, anything else = error.
+          set +e; scripts/bump-deps.sh; rc=$?; set -e
+          case "$rc" in
+            0) echo "changed=true"  >> "$GITHUB_OUTPUT" ;;
+            3) echo "changed=false" >> "$GITHUB_OUTPUT"
+               echo "everything already at its latest release" ;;
+            *) echo "::error::bump-deps.sh failed with exit $rc"; exit "$rc" ;;
+          esac
+
+      # This workflow exclusively owns the regenerated branch.
+      - name: push the branch
+        if: steps.bump.outputs.changed == 'true'
+        run: git push --force origin deps/bump
+
+      # Created only when one is not already open -- an existing PR picks up the
+      # force-push on its own, which is the entire point of reusing the branch.
+      #
+      # KNOWN LIMITATION, stated rather than discovered later: a PR opened with
+      # GITHUB_TOKEN does not trigger `on: pull_request` workflows, so ci.yml
+      # will NOT run on it. Until this uses an app token or a PAT, someone has to
+      # kick CI -- closing and reopening the PR is enough. The PR is still worth
+      # more than the issue it replaces, because it carries the exact diff.
+      - name: open the pull request if one is not already open
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(gh pr list --head deps/bump --state open --json number --jq '.[].number')" ]; then
+            echo "an open PR already tracks deps/bump; the force-push updated it"
+            exit 0
+          fi
+          # Keep the quoted heredoc indented so it remains inside the YAML block.
+          cat > /tmp/pr-body.md <<'EOF'
+          Opened weekly by `.github/workflows/vendored.yml`.
+
+          This branch is **reset off `main`** every week and force-pushed, so it
+          is always exactly `main` plus one commit per dependency that moved. It
+          is derived state: do not commit onto it, and expect history to be
+          rewritten.
+
+          **Mark this ready for review to run CI.** It is opened as a draft, and
+          drafts do not run CI in this repository. That also works around a
+          GitHub rule: a PR opened with `GITHUB_TOKEN` never triggers
+          `pull_request` workflows, but marking a draft ready is your action, not
+          the token's, so CI starts then.
+
+          An `aws-sdk-cpp` bump moves vendored s2n. The build checks whether the
+          local s2n compatibility patch is still applicable or can be removed.
+          EOF
+          # The heredoc body is indented for YAML's sake, so strip that indent
+          # before it becomes the PR description.
+          sed -i 's/^          //' /tmp/pr-body.md
+          # --draft, per project policy that drafts do not run CI. It also
+          # happens to solve the GITHUB_TOKEN problem: a PR opened by the token
+          # never triggers `pull_request` workflows, but marking a draft ready is
+          # a HUMAN action, and `ready_for_review` is in ci.yml's trigger list.
+          # So the review step and the CI trigger become the same gesture.
+          gh pr create --draft --base main --head deps/bump \
+            --title 'build: bump pinned dependencies' \
+            --body-file /tmp/pr-body.md

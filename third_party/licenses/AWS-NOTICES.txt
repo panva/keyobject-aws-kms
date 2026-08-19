@@ -1,0 +1,75 @@
+AWS COMPONENT NOTICES
+
+===== aws-sdk-cpp =====
+AWS SDK for C++
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+This product includes software developed by
+Amazon Technologies, Inc (http://www.amazon.com/).
+
+**********************
+THIRD PARTY COMPONENTS
+**********************
+This software includes third party software subject to the following copyrights:
+- XML parsing and utility functions from TinyXml2 - Lee Thomason.
+- JSON support from cJSON - Copyright (c) 2009-2017 Dave Gamble and cJSON contributors
+- OpenSSL build files for cmake used for Android Builds - Copyright (C) 2007-2012 LuaDist and Copyright (C) 2013 Brian Sidebotham
+- Android tool chain cmake build files - Copyright (c) 2010-2011, Ethan Rublee and Copyright (c) 2011-2014, Andrey Kamaev
+
+The licenses for these third party components are included in LICENSE.txt
+
+===== aws-crt-cpp =====
+AWS Crt Cpp
+Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+
+===== aws-c-auth =====
+AWS C Auth
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+
+===== aws-c-cal =====
+AWS C Cal
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+
+===== aws-c-common =====
+AWS C Common
+Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+===== aws-c-compression =====
+AWS C Compression
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+
+===== aws-c-event-stream =====
+AWS C Event Stream
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+
+===== aws-c-http =====
+AWS C Http
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+
+===== aws-c-io =====
+AWS C Io
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+
+The source/pkcs11/v2.40/pkcs11.h header file is based on Public Domain content from https://github.com/latchset/pkcs11-headers
+
+===== aws-c-mqtt =====
+AWS C Mqtt
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+
+===== aws-c-s3 =====
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+===== aws-c-sdkutils =====
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+===== s2n-tls =====
+s2n
+Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.

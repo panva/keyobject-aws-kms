@@ -1,0 +1,10 @@
+build/
+build-*/
+result
+result-*
+node_modules/
+.DS_Store
+.claude/
+*.o
+*.so
+*.dylib
