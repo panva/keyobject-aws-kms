@@ -20,6 +20,16 @@ grep -Fq 'machine=aarch64' "$repo/scripts/ci-alma.sh"
 grep -Fq 'node_arch=arm64' "$repo/scripts/ci-alma.sh"
 grep -Fq 'archive="node-v$version-linux-$node_arch.tar.xz"' \
   "$repo/scripts/ci-alma.sh"
+awk '
+  $0 == "dnf -q -y install \\" { packages = 1; next }
+  packages {
+    for (field = 1; field <= NF; field++) {
+      if ($field == "libatomic") found = 1
+    }
+    if ($0 !~ /\\$/) exit(found ? 0 : 1)
+  }
+  END { if (!found) exit 1 }
+' "$repo/scripts/ci-alma.sh"
 if grep -Fq 'archive="node-v$version-linux-$machine.tar.xz"' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'Node archive names must not use uname architecture names'

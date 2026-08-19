@@ -24,7 +24,7 @@ grep -q '^AlmaLinux release 8\.10 ' /etc/almalinux-release || {
 dnf -q -y install dnf-plugins-core
 dnf config-manager --set-enabled powertools >/dev/null
 dnf -q -y install \
-  ca-certificates curl diffutils file findutils git jq make openssl perl-core \
+  ca-certificates curl diffutils file findutils git jq libatomic make openssl perl-core \
   tar xz binutils \
   gcc-toolset-13-gcc-13.3.1-2.2.el8_10 \
   gcc-toolset-13-gcc-c++-13.3.1-2.2.el8_10 \
