@@ -233,6 +233,10 @@ provider binary is not independently CMVP certified; see the
   `teardown`. To inventory tagged leftovers outside the manifest, use the AWS
   Resource Groups Tagging API before considering `reap`; `reap --dry-run` only
   prints the calls it would make and does not enumerate live resources.
+- `reap` uses a valid implicit `build/real-kms-keys.json` alongside its
+  ownership-tag sweep. It warns and continues with tags alone when that default
+  is stale or unreadable. A path supplied with `--manifest` is always validated
+  strictly.
 - If a key is reported as foreign or its ownership tags do not match, stop and
   investigate. The harness intentionally refuses partial cleanup.
 - `PendingDeletion` is the expected final key state. An enabled test key still

@@ -727,7 +727,7 @@ jobs:
       - name: schedule test keys for deletion
         if: always()
         timeout-minutes: 5
-        run: node scripts/real-kms-keys.mjs reap --window 7
+        run: node scripts/real-kms-keys.mjs reap --window 7 --json
 
   lint:
     name: formatting and CI syntax

@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -58,15 +59,26 @@ function run(args, {
   scenario = 'tagged',
   value = manifest(),
   manifestPresent = true,
+  manifestExplicit = true,
 } = {}) {
-  const manifestPath = join(directory, 'manifest.json');
+  const manifestPath = manifestExplicit
+    ? join(directory, 'manifest.json')
+    : join(directory, 'build', 'real-kms-keys.json');
+  mkdirSync(join(directory, 'build'), { recursive: true });
   if (manifestPresent) writeFileSync(manifestPath, `${JSON.stringify(value)}\n`);
   else rmSync(manifestPath, { force: true });
   writeFileSync(logPath, '');
   return spawnSync(
     process.execPath,
-    [script, ...args, '--manifest', manifestPath, '--region', region, '--profile', 'fake'],
+    [
+      script,
+      ...args,
+      ...(manifestExplicit ? ['--manifest', manifestPath] : []),
+      '--region', region,
+      '--profile', 'fake',
+    ],
     {
+      cwd: directory,
       encoding: 'utf8',
       env: {
         ...process.env,
@@ -136,6 +148,10 @@ if (has('get-caller-identity')) {
     { TagKey: 'awskms-spec', TagValue: 'RSA_2048' },
   ];
   output({ Tags: tags });
+} else if (has('get-resources')) {
+  output({ ResourceTagMappingList: [
+    { ResourceARN: process.env.FAKE_AWS_ARN },
+  ] });
 } else {
   output({});
 }
@@ -160,6 +176,61 @@ describe('real KMS cleanup safety', () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /manifest not found/);
     assert.deepEqual(calls(), []);
+  });
+
+  test('reap ignores an unusable implicit default manifest and sweeps tags', () => {
+    const result = run(['reap'], {
+      value: { version: 0 },
+      manifestExplicit: false,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /ignoring unusable default manifest/);
+    const mutations = destructiveCalls();
+    assert.equal(mutations.length, 1);
+    assert.ok(mutations[0].includes('schedule-key-deletion'));
+  });
+
+  test('reap uses a valid implicit default manifest for alias cleanup', () => {
+    const result = run(['reap'], { manifestExplicit: false });
+    assert.equal(result.status, 0, result.stderr);
+    const mutations = destructiveCalls();
+    assert.equal(mutations.length, 2);
+    assert.ok(mutations[0].includes('delete-alias'));
+    assert.ok(mutations[1].includes('schedule-key-deletion'));
+  });
+
+  test('teardown --sweep works without an implicit default manifest', () => {
+    const result = run(['teardown', '--sweep'], {
+      manifestPresent: false,
+      manifestExplicit: false,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const mutations = destructiveCalls();
+    assert.equal(mutations.length, 1);
+    assert.ok(mutations[0].includes('schedule-key-deletion'));
+  });
+
+  test('reap rejects an unusable explicit manifest without destructive calls', () => {
+    const result = run(['reap'], { value: { version: 0 } });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /manifest version must be 1/);
+    assert.deepEqual(destructiveCalls(), []);
+  });
+
+  test('reap rejects a missing explicit manifest without destructive calls', () => {
+    const result = run(['reap'], { manifestPresent: false });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /manifest not found/);
+    assert.deepEqual(destructiveCalls(), []);
+  });
+
+  test('reap rejects a foreign explicit manifest without destructive calls', () => {
+    const result = run(['reap'], {
+      value: manifest({ account: '999900001111' }),
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /does not match caller account/);
+    assert.deepEqual(destructiveCalls(), []);
   });
 
   test('rejects a manifest with a foreign run id without destructive calls', () => {

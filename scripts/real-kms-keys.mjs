@@ -59,6 +59,7 @@ function parseArgs(argv) {
     profile: process.env.AWS_PROFILE,
     smoke: false,
     manifest: 'build/real-kms-keys.json',
+    manifestExplicit: false,
     window: 7,
     concurrency: 4,
     sweep: false,
@@ -76,7 +77,10 @@ function parseArgs(argv) {
     switch (argument) {
       case '--region': opts.region = next(); break;
       case '--profile': opts.profile = next(); break;
-      case '--manifest': opts.manifest = next(); break;
+      case '--manifest':
+        opts.manifest = next();
+        opts.manifestExplicit = true;
+        break;
       case '--window': opts.window = Number(next()); break;
       case '--concurrency': opts.concurrency = Number(next()); break;
       case '--smoke': opts.smoke = true; break;
@@ -451,7 +455,21 @@ function collectTargets(manifest, opts) {
 async function teardown(opts) {
   /* A normal teardown without its manifest is a billing leak, not a successful
    * no-op. Only an explicit tag sweep is allowed to proceed without one. */
-  const manifest = readManifest(opts, { optional: opts.sweep });
+  let manifest;
+  try {
+    manifest = readManifest(opts, {
+      optional: opts.sweep && !opts.manifestExplicit,
+    });
+  } catch (error) {
+    /* An ownership-tag sweep is recovery, so a stale implicit manifest must not
+     * prevent it from finding owned keys. An explicitly selected manifest
+     * remains a fail-closed assertion about the cleanup scope. */
+    if (!opts.sweep || opts.manifestExplicit) throw error;
+    console.error(
+      `ignoring unusable default manifest ${resolve(opts.manifest)} during tag sweep: ${error.message}`,
+    );
+    manifest = null;
+  }
   const targets = collectTargets(manifest, opts);
   if (targets.length === 0) {
     log('nothing to tear down');
@@ -540,7 +558,7 @@ async function main() {
   if (!['setup', 'teardown', 'status', 'reap'].includes(cmd)) {
     throw new Error('usage: real-kms-keys.mjs <setup|teardown|status|reap> [options]');
   }
-  if (cmd === 'teardown' && !existsSync(resolve(opts.manifest))) {
+  if (cmd === 'teardown' && !opts.sweep && !existsSync(resolve(opts.manifest))) {
     throw new Error(`manifest not found: ${resolve(opts.manifest)}`);
   }
   if (!hasAwsCli()) throw new Error('the `aws` CLI is required and was not found on PATH');
