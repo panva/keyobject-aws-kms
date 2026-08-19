@@ -56,7 +56,17 @@ prepare_mapper() {
     *) echo "unexpected generated KMS mapper: $source" >&2; exit 1 ;;
   esac
 
-  occurrences=$( { grep -Fo "$identifier" "$source" || true; } | wc -l | tr -d ' ')
+  occurrences=$(awk -v identifier="$identifier" '
+    {
+      remaining = $0
+      while ((position = index(remaining, identifier)) != 0) {
+        occurrences++
+        remaining = substr(remaining, position + length(identifier))
+      }
+    }
+
+    END { print occurrences + 0 }
+  ' "$source")
   if [ "$occurrences" = 0 ]; then
     echo "::error::the generated AWS KMS mapper no longer contains the out-of-scope KeySpec: $source" >&2
     echo "Delete this patch and its CMake call after confirming the SDK now omits it." >&2

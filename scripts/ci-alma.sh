@@ -42,10 +42,12 @@ cmake_version=3.31.8
 case "$arch" in
   x64)
     machine=x86_64
+    node_arch=x64
     cmake_sha=630615d8e98ac33eba7fbe472626dff5c899c85af3c024585ae109166a6909d0
     ;;
   arm64)
     machine=aarch64
+    node_arch=arm64
     cmake_sha=609735983e3bdf24b6ab379d918458d64196fe72b98226f62dd5e9fe7b2997cc
     ;;
   *)
@@ -92,7 +94,7 @@ install_node() {
       ;;
   esac
   [[ -n $version ]] || { echo "error: no Node release for '$spec'" >&2; exit 1; }
-  archive="node-v$version-linux-$machine.tar.xz"
+  archive="node-v$version-linux-$node_arch.tar.xz"
   curl -fsSL --retry 3 -o "/tmp/$archive" "https://nodejs.org/dist/v$version/$archive"
   checksum=$(curl -fsSL --retry 3 "https://nodejs.org/dist/v$version/SHASUMS256.txt" \
     | awk -v file="$archive" '$2 == file { print $1 }')

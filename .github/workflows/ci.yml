@@ -746,6 +746,7 @@ jobs:
         run: |
           bash -n scripts/*.sh
           shellcheck -x -e SC2001,SC2016 scripts/*.sh
+          scripts/ci-self-test.sh
           python3 -m py_compile scripts/ci-check-register.py
       - name: stale files, private paths, and removed curves
         run: scripts/ci-policy-gate.sh source
