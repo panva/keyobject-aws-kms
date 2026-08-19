@@ -38,6 +38,12 @@ assert_dnf_package() {
 assert_dnf_package libatomic
 assert_dnf_package gcc-toolset-13-libasan-devel-13.3.1-2.2.el8_10
 assert_dnf_package gcc-toolset-13-libubsan-devel-13.3.1-2.2.el8_10
+grep -Fq 'gcc -print-file-name=libasan.so.8' "$repo/scripts/ci-alma.sh"
+grep -Fq 'gcc -print-file-name=libubsan.so.1' "$repo/scripts/ci-alma.sh"
+if grep -Eq 'gcc -print-file-name=lib(asan|ubsan)\.so([")])' \
+  "$repo/scripts/ci-alma.sh"; then
+  fail 'LD_PRELOAD must use sanitizer runtime DSOs, not linker scripts'
+fi
 if grep -Fq 'archive="node-v$version-linux-$machine.tar.xz"' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'Node archive names must not use uname architecture names'

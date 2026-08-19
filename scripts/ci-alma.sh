@@ -198,10 +198,14 @@ case "$phase" in
     export PATH="/tmp/node-sanitize/bin:$openssl_prefix/bin:$PATH"
     export LD_LIBRARY_PATH="$openssl_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-    for runtime in libasan_preinit.o libasan.so libubsan.so; do
+    for runtime in libasan_preinit.o libasan.so.8 libubsan.so.1; do
       runtime_path=$(gcc -print-file-name="$runtime")
       [[ $runtime_path != "$runtime" && -f $runtime_path ]] || {
         echo "error: GCC sanitizer runtime is missing: $runtime" >&2
+        exit 1
+      }
+      readelf -h "$runtime_path" >/dev/null || {
+        echo "error: GCC sanitizer runtime is not an ELF file: $runtime_path" >&2
         exit 1
       }
     done
@@ -221,12 +225,8 @@ case "$phase" in
     export UBSAN_OPTIONS='halt_on_error=1:print_stacktrace=1'
     ctest --test-dir build-sanitized -R '^unit$' --no-tests=error --output-on-failure
 
-    asan=$(gcc -print-file-name=libasan.so)
-    ubsan=$(gcc -print-file-name=libubsan.so)
-    [[ -f $asan && -f $ubsan ]] || {
-      echo "error: sanitizer runtimes were not found" >&2
-      exit 1
-    }
+    asan=$(gcc -print-file-name=libasan.so.8)
+    ubsan=$(gcc -print-file-name=libubsan.so.1)
     export LD_PRELOAD="$asan:$ubsan${LD_PRELOAD:+:$LD_PRELOAD}"
     AWSKMS_MODULE="$PWD/build-sanitized/aws-kms.so" \
       /tmp/node-sanitize/bin/node test/run.mjs 2>&1 | tee /tmp/sanitizer-suite.log
