@@ -220,9 +220,11 @@ Use this procedure:
 5. Add a uniquely named AWS KMS section with the absolute module path and
    `activate = 1`. Add `region`, `profile`, or `endpoint` only if provider-wide
    fallbacks are desired.
-6. If the original config activated no providers, explicitly activate the
-   `default` provider as shown below. If it intentionally uses a different
-   provider set, such as `base` plus `fips`, preserve that set instead.
+6. Explicitly activate the `default` provider as shown below. This is required
+   by the Linux AWS SDK transport's s2n-tls dependency even when the `fips`
+   provider is also active; the `base` provider is not sufficient. Keep
+   `fips=yes` in the default property expression so ordinary algorithm fetches
+   remain restricted to FIPS implementations.
 7. Run `check.mjs` with the merged file before deployment.
 
 A minimal non-FIPS merge looks like this:

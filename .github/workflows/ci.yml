@@ -536,7 +536,7 @@ jobs:
           ctest --test-dir build-fips-node -R '^unit$' --no-tests=error \
             --output-on-failure
           [[ $(<build-fips-node/awskms-stub-mldsa) != no ]]
-      - name: activate FIPS, base, and aws-kms in Node
+      - name: activate FIPS, default, and aws-kms in Node
         id: node-fips
         env:
           OPENSSL_VERSION: ${{ steps.node-openssl.outputs.version }}
@@ -564,9 +564,9 @@ jobs:
           alg_section = algorithms
           [providers]
           fips = fips_sect
-          base = base_sect
+          default = default_sect
           aws-kms = aws_kms_sect
-          [base_sect]
+          [default_sect]
           activate = 1
           [aws_kms_sect]
           module = $module
@@ -574,6 +574,20 @@ jobs:
           [algorithms]
           default_properties = fips=yes,?keyobject.aws_kms!=yes
           EOF
+          # s2n initializes these legacy hashes with a local FIPS opt-out. The
+          # same fetches without that opt-out must remain globally prohibited.
+          for digest in md5 md5-sha1; do
+            printf test | OPENSSL_CONF="$config" OPENSSL_MODULES="$modules" \
+              LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              "$prefix/bin/openssl" dgst -propquery '-fips' "-$digest" \
+                >/dev/null
+            if printf test | OPENSSL_CONF="$config" OPENSSL_MODULES="$modules" \
+              LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              "$prefix/bin/openssl" dgst "-$digest" >/dev/null 2>&1; then
+              echo "error: $digest escaped the global FIPS policy" >&2
+              exit 1
+            fi
+          done
           OPENSSL_MODULES="$modules" node --openssl-config="$config" -e '
             const assert = require("node:assert/strict");
             const crypto = require("node:crypto");
@@ -670,9 +684,9 @@ jobs:
           alg_section = algorithms
           [providers]
           fips = fips_sect
-          base = base_sect
+          default = default_sect
           aws-kms = aws_kms_sect
-          [base_sect]
+          [default_sect]
           activate = 1
           [aws_kms_sect]
           module = $PWD/build/aws-kms.so
@@ -680,6 +694,20 @@ jobs:
           [algorithms]
           default_properties = fips=yes,?keyobject.aws_kms!=yes
           EOF
+          # s2n initializes these legacy hashes with a local FIPS opt-out. The
+          # same fetches without that opt-out must remain globally prohibited.
+          for digest in md5 md5-sha1; do
+            printf test | OPENSSL_CONF="$config" OPENSSL_MODULES="$modules" \
+              LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              "$prefix/bin/openssl" dgst -propquery '-fips' "-$digest" \
+                >/dev/null
+            if printf test | OPENSSL_CONF="$config" OPENSSL_MODULES="$modules" \
+              LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              "$prefix/bin/openssl" dgst "-$digest" >/dev/null 2>&1; then
+              echo "error: $digest escaped the global FIPS policy" >&2
+              exit 1
+            fi
+          done
           OPENSSL_MODULES="$modules" node --openssl-config="$config" -e '
             const assert = require("node:assert/strict");
             const crypto = require("node:crypto");
