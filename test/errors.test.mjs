@@ -210,22 +210,27 @@ describe('a key that is not for signing', { skip: needsHttpStub }, () => {
 });
 
 describe('throttling is retried before it is reported', { skip: needsHttpStub }, () => {
-  // The slowest test here, and the slowness is the assertion: the SDK retries
-  // ThrottlingException with backoff, so ERR_OSSL_AWSKMS_THROTTLED surfaces only
-  // once retries are exhausted. The operational consequence is that
-  // crypto.sign()'s synchronous form blocks the event loop for the whole retry
-  // sequence rather than one round trip. This becoming fast would mean retries
-  // were lost and the README's timing note had gone stale.
-  test('a throttled sign retries, then reports THROTTLED', () => {
+  test('a throttled sign retries, then reports THROTTLED', async () => {
     const key = createPrivateKey({
       key: new URL('aws-kms:key-id=alias/fault-signerr-ThrottlingException-RSA_2048'),
     });
-    const started = Date.now();
+
+    let response = await fetch(`${httpStub}/__requests`, { method: 'DELETE' });
+    assert.equal(response.status, 200);
+
     assert.throws(() => cryptoSign('sha256', randomBytes(32), key), {
       code: 'ERR_OSSL_AWSKMS_THROTTLED',
     });
-    const elapsed = Date.now() - started;
-    assert.ok(elapsed > 500, `expected retries with backoff, but it failed in ${elapsed}ms`);
+
+    response = await fetch(`${httpStub}/__requests`);
+    assert.equal(response.status, 200);
+    const { requests } = await response.json();
+    const attempts = requests.filter(
+      ({ target, keyId }) =>
+        target === 'TrentService.Sign' &&
+        keyId === 'alias/fault-signerr-ThrottlingException-RSA_2048',
+    );
+    assert.ok(attempts.length > 1, `expected retries, but observed ${attempts.length} attempts`);
   });
 });
 
