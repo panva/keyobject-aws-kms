@@ -150,8 +150,11 @@ test('build package staging uses the shared target implementation', (t) => {
   const build = join(directory, 'build')
   const output = join(directory, 'output')
   const target = targets[0]
+  const version = JSON.parse(
+    readFileSync(join(repository, 'npm', 'core', 'package.json'), 'utf8'),
+  ).version
   mkdirSync(build)
-  writeFileSync(join(build, target.module), moduleFor(target, '0.0.0'))
+  writeFileSync(join(build, target.module), moduleFor(target, version))
   writeFileSync(join(build, 'awskms.relocatable.cnf'), 'relocatable config\n')
   writeFileSync(join(build, 'awskms-backend'), 'aws\n')
   const components = JSON.parse(
@@ -165,10 +168,10 @@ test('build package staging uses the shared target implementation', (t) => {
     outputDirectory: output,
     targetName: target.name,
   })
-  assert.equal(basename(result.coreTarball), 'keyobject-aws-kms-0.0.0.tgz')
+  assert.equal(basename(result.coreTarball), `keyobject-aws-kms-${version}.tgz`)
   assert.equal(
     basename(result.satelliteTarball),
-    'keyobject-aws-kms-darwin-arm64-0.0.0.tgz',
+    `keyobject-aws-kms-darwin-arm64-${version}.tgz`,
   )
   assert.deepEqual(
     JSON.parse(tarEntry(result.satelliteTarball, 'package/package.json')),
