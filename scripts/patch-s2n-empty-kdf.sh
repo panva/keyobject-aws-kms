@@ -59,7 +59,11 @@ fi
 
 temporary=$(mktemp "${TMPDIR:-/tmp}/awskms-s2n-kdf.XXXXXX")
 trap 'rm -f "$temporary"' EXIT
-awk -v define="$DEFINE" -v body="$BODY" '
+AWSKMS_S2N_KDF_DEFINE=$DEFINE AWSKMS_S2N_KDF_BODY=$BODY awk '
+  BEGIN {
+    define = ENVIRON["AWSKMS_S2N_KDF_DEFINE"]
+    body = ENVIRON["AWSKMS_S2N_KDF_BODY"]
+  }
   $0 == define {
     if ((getline next_line) <= 0 || next_line != body) {
       failed = 42
