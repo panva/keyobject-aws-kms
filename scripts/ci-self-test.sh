@@ -18,9 +18,14 @@ bump_fixture="$temporary/dependency-bump"
 mkdir -p "$bump_fixture"/{cmake,scripts,third_party} \
   "$bump_fixture/fake-bin"
 cp "$repo/scripts/bump-deps.sh" \
-  "$repo/scripts/dependency-pr-body.sh" "$bump_fixture/scripts/"
+  "$repo/scripts/check-licenses.mjs" \
+  "$repo/scripts/dependency-pr-body.sh" \
+  "$repo/scripts/update-aws-sdk-components.mjs" "$bump_fixture/scripts/"
+cp "$repo/third_party/components.json" "$bump_fixture/third_party/"
+cp -R "$repo/third_party/licenses" "$bump_fixture/third_party/"
 cat > "$bump_fixture/cmake/FetchAwsSdkKms.cmake" <<'EOF'
-set(AWSKMS_AWS_SDK_TAG "1.11.855")
+set(AWSKMS_AWS_SDK_TAG "1.11.855" CACHE STRING
+  "fixture")
 EOF
 cat > "$bump_fixture/third_party/vendored.manifest" <<'EOF'
 ada | ada-url/ada | v3.2.7 | ada.cpp ada.h ada_c.h | LICENSE-MIT
@@ -39,10 +44,154 @@ set -euo pipefail
 case $2 in
   'repos/aws/aws-sdk-cpp/tags?per_page=100') printf '1.11.874\n' ;;
   'repos/ada-url/ada/releases/latest') printf 'v3.2.8\n' ;;
-  *) echo "unexpected gh request: $*" >&2; exit 64 ;;
+  *)
+    node -e '
+      const responses = require(process.argv[1]);
+      const response = responses[process.argv[2]];
+      if (response == null) {
+        console.error(`unexpected gh request: ${process.argv[2]}`);
+        process.exit(64);
+      }
+      process.stdout.write(JSON.stringify(response));
+    ' "${FAKE_GH_RESPONSES:?}" "$2"
+    ;;
 esac
 EOF
 chmod 755 "$bump_fixture/scripts/"*.sh "$bump_fixture/fake-bin/gh"
+chmod 755 "$bump_fixture/scripts/update-aws-sdk-components.mjs"
+node - "$bump_fixture" <<'EOF'
+const fs = require('node:fs');
+const path = require('node:path');
+
+const fixture = process.argv[2];
+const crtCommit = '851d8d003c9d5150edab56807e2393013f3771de';
+const gitlinks = {
+  'crt/aws-c-auth': '4b5d524bf1a511b05e0fffe5bdc51800770b9427',
+  'crt/aws-c-cal': '8aa2a48a09f93c65d4cf06388e143a6584de6321',
+  'crt/aws-c-common': '3c69b871dfa1815231802febf1bb6899f84cccdb',
+  'crt/aws-c-compression': 'd8264e64f698341eb03039b96b4f44702a9b3f83',
+  'crt/aws-c-event-stream': '51bef3c44e1058b1689751539170b2e0f589ccdb',
+  'crt/aws-c-http': '8aefd899fc3210bfd0e3fd414011a3cb708bf6e4',
+  'crt/aws-c-io': 'e2946c99521fa12d285c9a0829c92b1bf713922b',
+  'crt/aws-c-mqtt': '2ef9605ec9c50bea3f921e08022ddd57eed70901',
+  'crt/aws-c-s3': 'a852faa2df3ab2b31fb4cfd64fd3379a2f4ae22e',
+  'crt/aws-c-sdkutils': 'a1cc19f53b63658f1b1400b36f199eafeeb895a6',
+  'crt/aws-checksums': '1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e',
+  'crt/aws-lc': 'f6acf748df0ea6157d55e640730b38d21a7751cd',
+  'crt/s2n': '66b1c94d1dfc99b237427cbde230eca63bb8b89c',
+};
+const repositories = Object.fromEntries(
+  Object.keys(gitlinks).map((gitlink) => [
+    gitlink,
+    `https://github.com/awslabs/${gitlink === 'crt/s2n' ? 's2n' : gitlink.slice(4)}.git`,
+  ]),
+);
+const gitmodules = Object.entries(repositories)
+  .map(([gitlink, url]) => `[submodule "${gitlink}"]\n\tpath = ${gitlink}\n\turl = ${url}\n`)
+  .join('');
+const legalTree = (files) => ({
+  truncated: false,
+  tree: Object.entries(files).map(([file, sha]) => ({
+    path: file, mode: '100644', type: 'blob', sha,
+  })),
+});
+const crtTree = legalTree({
+  LICENSE: 'd645695673349e3947e8e5ae42332d0ac3164cd7',
+  NOTICE: '8b820137a0aa14f48ecaa89c3602139eaa2f7f88',
+});
+crtTree.tree.push(...Object.entries(gitlinks).map(([gitlink, sha]) => ({
+  path: gitlink, mode: '160000', type: 'commit', sha,
+})));
+const responses = {
+  'repos/aws/aws-sdk-cpp/contents/crt/aws-crt-cpp?ref=1.11.874': {
+    sha: crtCommit,
+    submodule_git_url: 'https://github.com/awslabs/aws-crt-cpp.git',
+  },
+  [`repos/awslabs/aws-crt-cpp/contents/.gitmodules?ref=${crtCommit}`]: {
+    encoding: 'base64', content: Buffer.from(gitmodules).toString('base64'),
+  },
+  [`repos/awslabs/aws-crt-cpp/git/trees/${crtCommit}?recursive=1`]: crtTree,
+  'repos/aws/aws-sdk-cpp/git/trees/1.11.874': legalTree({
+    LICENSE: '8dada3edaf50dbc082c9a125058f25def75e625a',
+    'LICENSE.txt': '3adf3884dda91cc70aca0b8553406b159a530702',
+    'NOTICE.txt': '66bbe1f2efa5f06838ef6d68a4644c858a8f92fa',
+  }),
+  [`repos/awslabs/aws-c-cal/git/trees/${gitlinks['crt/aws-c-cal']}`]: legalTree({
+    LICENSE: '67db8588217f266eb561f75fae738656325deac9',
+    NOTICE: 'df81ba71af0026d3dab3ab7a9ad68bd15540b575',
+  }),
+  [`repos/awslabs/aws-c-io/git/trees/${gitlinks['crt/aws-c-io']}`]: legalTree({
+    LICENSE: 'd645695673349e3947e8e5ae42332d0ac3164cd7',
+    NOTICE: '7939cd2397dc0b7a4b1aa55f23ad6d97f5ad1211',
+  }),
+  [`repos/awslabs/aws-c-s3/git/trees/${gitlinks['crt/aws-c-s3']}`]: legalTree({
+    LICENSE: '67db8588217f266eb561f75fae738656325deac9',
+    NOTICE: '616fc5889451895dbf9768e6787c8308c33bef22',
+  }),
+  [`repos/awslabs/aws-c-sdkutils/git/trees/${gitlinks['crt/aws-c-sdkutils']}`]: legalTree({
+    LICENSE: '67db8588217f266eb561f75fae738656325deac9',
+    NOTICE: '616fc5889451895dbf9768e6787c8308c33bef22',
+  }),
+  [`repos/awslabs/s2n/git/trees/${gitlinks['crt/s2n']}`]: legalTree({
+    LICENSE: 'd645695673349e3947e8e5ae42332d0ac3164cd7',
+    NOTICE: 'f8bbcc301b59800d2f6ac5c1f82cb2d8bcff31b2',
+  }),
+};
+const write = (name, value) => fs.writeFileSync(
+  path.join(fixture, name), JSON.stringify(value),
+);
+write('gh-responses.json', responses);
+
+const graphDrift = structuredClone(responses);
+graphDrift[`repos/awslabs/aws-crt-cpp/git/trees/${crtCommit}?recursive=1`]
+  .tree.push({
+    path: 'crt/aws-c-new', mode: '160000', type: 'commit',
+    sha: '1111111111111111111111111111111111111111',
+  });
+write('gh-responses-graph-drift.json', graphDrift);
+
+const repositoryDrift = structuredClone(responses);
+const modulesEndpoint = `repos/awslabs/aws-crt-cpp/contents/.gitmodules?ref=${crtCommit}`;
+repositoryDrift[modulesEndpoint].content = Buffer.from(
+  gitmodules.replace(
+    'https://github.com/awslabs/aws-c-cal.git',
+    'https://github.com/example/aws-c-cal.git',
+  ),
+).toString('base64');
+write('gh-responses-repository-drift.json', repositoryDrift);
+
+const legalDrift = structuredClone(responses);
+const s2nEndpoint = `repos/awslabs/s2n/git/trees/${gitlinks['crt/s2n']}`;
+legalDrift[s2nEndpoint].tree.find(({ path: file }) => file === 'NOTICE').sha =
+  '2222222222222222222222222222222222222222';
+write('gh-responses-legal-drift.json', legalDrift);
+EOF
+
+assert_component_update_fails() {
+  local responses=$1 expected=$2 label=$3 before rc
+  before=$(shasum -a 256 "$bump_fixture/third_party/components.json")
+  set +e
+  PATH="$bump_fixture/fake-bin:$PATH" \
+    FAKE_GH_RESPONSES="$bump_fixture/$responses" \
+    "$bump_fixture/scripts/update-aws-sdk-components.mjs" 1.11.874 \
+    >"$bump_fixture/$label.out" 2>"$bump_fixture/$label.err"
+  rc=$?
+  set -e
+  [[ $rc -ne 0 ]] || fail "$label bypassed AWS component review"
+  grep -Fq "$expected" "$bump_fixture/$label.err" ||
+    fail "$label failure is not actionable"
+  [[ $(shasum -a 256 "$bump_fixture/third_party/components.json") == "$before" ]] ||
+    fail "$label modified the component manifest"
+}
+
+assert_component_update_fails \
+  gh-responses-graph-drift.json 'unexpected: crt/aws-c-new' graph-drift
+assert_component_update_fails \
+  gh-responses-repository-drift.json \
+  'repository for crt/aws-c-cal changed' repository-drift
+assert_component_update_fails \
+  gh-responses-legal-drift.json \
+  'awslabs/s2n NOTICE changed' legal-drift
 git -C "$bump_fixture" init -q
 git -C "$bump_fixture" config user.name fixture
 git -C "$bump_fixture" config user.email fixture@example.com
@@ -52,6 +201,7 @@ git -C "$bump_fixture" commit -qm base
 git -C "$bump_fixture" branch -M main
 git -C "$bump_fixture" checkout -qb deps/bump
 PATH="$bump_fixture/fake-bin:$PATH" \
+  FAKE_GH_RESPONSES="$bump_fixture/gh-responses.json" \
   "$bump_fixture/scripts/bump-deps.sh" >/dev/null
 
 bump_subjects=$(git -C "$bump_fixture" log --reverse --format='%s' main..HEAD)
@@ -61,6 +211,32 @@ expected_bump_subjects=$'build: bump aws-sdk-cpp from 1.11.855 to 1.11.874\nbuil
     <(printf '%s\n' "$bump_subjects") >&2 || true
   fail 'dependency bump subjects do not include exact old and new versions'
 }
+
+component_summary=$(node -e '
+  const manifest = require(process.argv[1]);
+  const wanted = [
+    "aws-crt-cpp", "aws-c-cal", "aws-c-io", "aws-c-s3",
+    "aws-c-sdkutils", "s2n-tls",
+  ];
+  console.log(manifest.awsSdkTag);
+  for (const name of wanted) {
+    const component = manifest.components.find((entry) => entry.name === name);
+    console.log(`${name}=${component.commit}`);
+  }
+' "$bump_fixture/third_party/components.json")
+expected_component_summary=$(cat <<'EOF'
+1.11.874
+aws-crt-cpp=851d8d003c9d5150edab56807e2393013f3771de
+aws-c-cal=8aa2a48a09f93c65d4cf06388e143a6584de6321
+aws-c-io=e2946c99521fa12d285c9a0829c92b1bf713922b
+aws-c-s3=a852faa2df3ab2b31fb4cfd64fd3379a2f4ae22e
+aws-c-sdkutils=a1cc19f53b63658f1b1400b36f199eafeeb895a6
+s2n-tls=66b1c94d1dfc99b237427cbde230eca63bb8b89c
+EOF
+)
+[[ $component_summary == "$expected_component_summary" ]] ||
+  fail 'AWS SDK bump did not refresh the exact component graph'
+node "$bump_fixture/scripts/check-licenses.mjs" >/dev/null
 
 bump_body=$("$bump_fixture/scripts/dependency-pr-body.sh" main)
 expected_bump_body=$(cat <<'EOF'
@@ -89,6 +265,8 @@ grep -Fq 'scripts/dependency-pr-body.sh origin/main > /tmp/pr-body.md' \
   "$vendored_workflow" || fail 'vendored workflow does not render the tested PR body'
 grep -Fq '"repos/$GITHUB_REPOSITORY/pulls/$existing_pr_number"' \
   "$vendored_workflow" || fail 'vendored workflow does not refresh an existing PR body'
+grep -Fq 'node-version-file: .node-version' "$vendored_workflow" ||
+  fail 'dependency updater does not run on the project Node version'
 
 # AlmaLinux uses uname/CMake architecture names and Node distribution names for
 # different purposes. Keep both mappings explicit and keep Node archive names

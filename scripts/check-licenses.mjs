@@ -7,9 +7,14 @@ const root = resolve(import.meta.dirname, '..');
 const manifestPath = join(root, 'third_party', 'components.json');
 const licenses = join(root, 'third_party', 'licenses');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+const fetchCmake = readFileSync(join(root, 'cmake', 'FetchAwsSdkKms.cmake'), 'utf8');
+const sdkTag = fetchCmake.match(
+  /^set\(AWSKMS_AWS_SDK_TAG "([^"]+)" CACHE STRING$/m,
+)?.[1];
 
 assert.equal(manifest.schemaVersion, 1);
-assert.equal(manifest.awsSdkTag, '1.11.855');
+assert.ok(sdkTag, 'could not read AWSKMS_AWS_SDK_TAG');
+assert.equal(manifest.awsSdkTag, sdkTag, 'AWS SDK component inventory drift');
 
 const required = new Set([
   'ada',
@@ -34,6 +39,18 @@ const required = new Set([
 ]);
 const names = new Set(manifest.components.map(({ name }) => name));
 assert.deepEqual([...names].sort(), [...required].sort(), 'component inventory drift');
+
+for (const name of [
+  'aws-cpp-sdk-core',
+  'aws-cpp-sdk-kms',
+  'aws-sdk-cpp-third-party',
+]) {
+  const component = manifest.components.find((entry) => entry.name === name);
+  assert.equal(component.version, sdkTag, `${name} version drift`);
+}
+for (const component of manifest.components.filter(({ commit }) => commit != null)) {
+  assert.match(component.commit, /^[0-9a-f]{40}$/, `${component.name} commit`);
+}
 
 const referenced = new Set();
 for (const component of manifest.components) {

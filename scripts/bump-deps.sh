@@ -11,8 +11,9 @@
 #              handled by update-vendored.sh, which re-downloads and re-checks
 #              the API surface before writing anything.
 #   PINNED     fetched at BUILD time from a tag in a cmake file, so there is
-#              nothing in the tree to refresh -- only a version string to move.
-#              aws-sdk-cpp is the whole of this category today.
+#              no vendored source to refresh. Its version and exact linked
+#              component inventory move together. aws-sdk-cpp is the whole of
+#              this category today.
 #
 # Dependabot covers neither: it reads package manifests, and a CMake
 # FetchContent tag is invisible to it. That is why aws-sdk-cpp sat unwatched --
@@ -38,9 +39,10 @@ commit() { # <message>
 }
 
 # --- pinned: aws-sdk-cpp ------------------------------------------------------
-# The tag lives in one place and is read back with the same expression that sets
-# it, so a reformat of that line breaks this loudly rather than silently
-# matching nothing and reporting "up to date" forever.
+# The build tag has one authoritative source and is read back with the same
+# expression that sets it. The public component manifest mirrors it and is
+# regenerated below. A reformat of this line therefore breaks loudly rather
+# than silently matching nothing and reporting "up to date" forever.
 PIN_FILE=cmake/FetchAwsSdkKms.cmake
 cur=$(sed -n 's/^set(AWSKMS_AWS_SDK_TAG "\([^"]*\)".*/\1/p' "$PIN_FILE")
 [[ -n $cur ]] || { echo "could not read AWSKMS_AWS_SDK_TAG from $PIN_FILE" >&2; exit 1; }
@@ -65,7 +67,11 @@ if [[ $cur != "$latest" ]]; then
   if (( ! DRY )); then
     sed -i.bak "s/^set(AWSKMS_AWS_SDK_TAG \"$cur\"/set(AWSKMS_AWS_SDK_TAG \"$latest\"/" "$PIN_FILE"
     rm -f "$PIN_FILE.bak"
-    git add "$PIN_FILE"
+    # Keep the public license/component inventory tied to the exact SDK/CRT
+    # graph being built. The updater rejects unknown gitlinks so a newly added
+    # static dependency cannot bypass license review through an automated bump.
+    scripts/update-aws-sdk-components.mjs "$latest"
+    git add "$PIN_FILE" third_party/components.json
   fi
   # The body is not decoration. A bump moves vendored s2n and regenerates the
   # KMS model mappers. Both configure-time patches validate exact source shapes.
@@ -86,7 +92,11 @@ they change, so a red build here is expected to mean one of:
 The SDK bump also regenerates its KMS KeySpec mappers.
 scripts/patch-aws-sdk-keyspec.sh validates their exact shape and occurrence
 counts. If it fails, confirm the out-of-scope curve is still excluded from the
-linked artifact before updating or deleting that patch.")"
+linked artifact before updating or deleting that patch.
+
+scripts/update-aws-sdk-components.mjs records the exact AWS CRT repositories and
+gitlinks in the license manifest. It also refuses dependency or upstream legal
+file drift until the bundled license and notice coverage is reviewed.")"
 fi
 
 # --- vendored: everything in third_party/vendored.manifest --------------------
