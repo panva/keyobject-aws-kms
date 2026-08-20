@@ -102,6 +102,21 @@ function(awskms_add_aws_sdk)
   set(MINIMIZE_SIZE ON CACHE BOOL "" FORCE)
   set(USE_CRT_HTTP_CLIENT ON CACHE BOOL "" FORCE)
   set(USE_OPENSSL ON CACHE BOOL "" FORCE)
+  # OpenSSL KDF setters reject a NULL data pointer even when an input OSSL_PARAM
+  # has length zero. s2n represents valid empty blobs that way, including the
+  # unused salt in TLS 1.3 HKDF-Expand. Canonicalize empty KDF inputs before
+  # compiling the vendored source; the patch validates the exact source shape.
+  execute_process(
+    COMMAND "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../scripts/patch-s2n-empty-kdf.sh"
+            "${_awskms_sdk_src}"
+    RESULT_VARIABLE _awskms_s2n_empty_kdf_patch_rc
+    OUTPUT_VARIABLE _awskms_s2n_empty_kdf_patch_out
+    ERROR_VARIABLE  _awskms_s2n_empty_kdf_patch_out)
+  if(NOT _awskms_s2n_empty_kdf_patch_rc EQUAL 0)
+    message(FATAL_ERROR "patching vendored s2n empty KDF parameters failed (rc=${_awskms_s2n_empty_kdf_patch_rc}):\n${_awskms_s2n_empty_kdf_patch_out}")
+  endif()
+  message(STATUS "${_awskms_s2n_empty_kdf_patch_out}")
+
   # The pinned s2n sources call ASN1_STRING_data(), which OpenSSL 4.0 removes.
   # Apply the compatibility patch after fetching and before add_subdirectory so
   # the patched sources are compiled. The script validates the exact call-site

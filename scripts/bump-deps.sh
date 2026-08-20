@@ -69,21 +69,21 @@ if [[ $cur != "$latest" ]]; then
   fi
   # The body is not decoration. A bump moves vendored s2n and regenerates the
   # KMS model mappers. Both configure-time patches validate exact source shapes.
-  # In particular,
-  # scripts/patch-s2n-openssl4.sh asserts an exact ASN1_STRING_data call-site
-  # count, so it requires review if upstream fixes the issue or moves the code.
+  # In particular, the two s2n patches assert exact KDF macro and
+  # ASN1_STRING_data source shapes, so they require review if upstream fixes
+  # either issue or moves the code.
   # Whoever reviews this needs to know that before they see a red build.
   commit "$(printf 'build: bump aws-sdk-cpp to %s\n\n%s' "$latest" \
 "Was $cur.
 
-This moves vendored s2n. scripts/patch-s2n-openssl4.sh asserts an exact
-ASN1_STRING_data call-site count and fails loudly when it changes, so a red
-build here is expected to mean one of:
+This moves vendored s2n. scripts/patch-s2n-empty-kdf.sh and
+scripts/patch-s2n-openssl4.sh assert exact source shapes and fail loudly when
+they change, so a red build here is expected to mean one of:
 
-  * upstream fixed the OpenSSL 4.0 issue -- delete the patch and its
+  * upstream fixed an OpenSSL compatibility issue -- delete that patch and its
     call in cmake/FetchAwsSdkKms.cmake
-  * the call sites moved -- re-read them, confirm they are still read-only,
-    and update EXPECTED
+  * an affected source shape moved -- re-read the KDF boundary or ASN1 call
+    sites and update that patch's assertions only after confirming its semantics
 
 The SDK bump also regenerates its KMS KeySpec mappers.
 scripts/patch-aws-sdk-keyspec.sh validates their exact shape and occurrence

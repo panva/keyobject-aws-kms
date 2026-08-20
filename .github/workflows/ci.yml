@@ -78,7 +78,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/_deps/aws-sdk-cpp
-          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake', 'scripts/patch-s2n-openssl4.sh', 'scripts/patch-aws-sdk-keyspec.sh') }}
+          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake', 'scripts/patch-s2n-empty-kdf.sh', 'scripts/patch-s2n-openssl4.sh', 'scripts/patch-aws-sdk-keyspec.sh') }}
 
       - name: build and verify in pinned AlmaLinux 8
         run: |
@@ -148,7 +148,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/_deps/aws-sdk-cpp
-          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake', 'scripts/patch-s2n-openssl4.sh', 'scripts/patch-aws-sdk-keyspec.sh') }}
+          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake', 'scripts/patch-s2n-empty-kdf.sh', 'scripts/patch-s2n-openssl4.sh', 'scripts/patch-aws-sdk-keyspec.sh') }}
 
       - name: configure, build, and verify
         run: |

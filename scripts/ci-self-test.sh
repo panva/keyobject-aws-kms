@@ -154,4 +154,42 @@ for variant in five seven malformed; do
   fi
 done
 
+make_s2n_kdf_sdk() {
+  local name=$1
+  local variant=${2:-valid}
+  local sdk="$temporary/s2n-sdk-$name"
+  local crypto="$sdk/crt/aws-crt-cpp/crt/s2n/crypto"
+
+  mkdir -p "$crypto"
+  {
+    printf '#pragma once\n'
+    printf '#if S2N_OPENSSL_VERSION_AT_LEAST(3, 0, 0)\n'
+    printf '    #define S2N_OSSL_PARAM_BLOB(id, blob) \\\n'
+    if [[ $variant == valid ]]; then
+      printf '        OSSL_PARAM_octet_string(id, blob->data, blob->size)\n'
+    else
+      printf '        OSSL_PARAM_octet_string(id, blob->data, (blob)->size)\n'
+    fi
+    printf '#endif\n'
+  } > "$crypto/s2n_kdf.h"
+  printf '%s\n' "$sdk"
+}
+
+valid_s2n_sdk=$(make_s2n_kdf_sdk valid)
+"$repo/scripts/patch-s2n-empty-kdf.sh" "$valid_s2n_sdk" >/dev/null
+grep -Fq 's2n_ossl_empty_param_data' \
+  "$valid_s2n_sdk/crt/aws-crt-cpp/crt/s2n/crypto/s2n_kdf.h"
+if grep -Fq 'OSSL_PARAM_octet_string(id, blob->data, blob->size)' \
+  "$valid_s2n_sdk/crt/aws-crt-cpp/crt/s2n/crypto/s2n_kdf.h"; then
+  fail 'the s2n empty-KDF patch left the unsafe macro behind'
+fi
+"$repo/scripts/patch-s2n-empty-kdf.sh" "$valid_s2n_sdk" \
+  | grep -Fq 'already patched'
+
+invalid_s2n_sdk=$(make_s2n_kdf_sdk malformed malformed)
+if "$repo/scripts/patch-s2n-empty-kdf.sh" "$invalid_s2n_sdk" \
+  > "$temporary/s2n-kdf-error" 2>&1; then
+  fail 'the s2n empty-KDF patch accepted an unexpected macro shape'
+fi
+
 echo 'ok: CI helper regressions pass'
