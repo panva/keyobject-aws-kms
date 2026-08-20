@@ -38,6 +38,30 @@ export const KEY_SPECS = [
   { spec: 'ML_DSA_87', family: 'ml-dsa', pqc: true },
 ];
 
+/*
+ * What the focused real-service pass must prove.  Keep this independent from
+ * the per-KeySpec list above: if a smoke flag is accidentally removed, or a new
+ * family replaces an old one, the real-KMS lane must fail instead of quietly
+ * running a smaller matrix.
+ *
+ * Most error handling is more precisely covered by the HTTP stub, where the
+ * exact response and request count are observable.  key-not-found is the one
+ * retained service error: it proves the real SDK maps an actual KMS error into
+ * the provider's public reason code.
+ */
+export const REAL_KMS_COVERAGE = Object.freeze({
+  families: Object.freeze(['rsa', 'ec', 'ed25519', 'ml-dsa']),
+  interfaces: Object.freeze(['node-crypto', 'webcrypto']),
+  signatureModes: Object.freeze([
+    'rsa-pkcs1-v1_5',
+    'rsa-pss',
+    'ecdsa',
+    'ed25519',
+    'ml-dsa',
+  ]),
+  serviceErrors: Object.freeze(['key-not-found']),
+});
+
 export const ROLES = ['test', 'other'];
 
 const BY_SPEC = new Map(KEY_SPECS.map((k) => [k.spec, k]));
@@ -75,8 +99,17 @@ export function specsFor({ smokeOnly = false } = {}) {
 
 /* Every (role, spec) pair that must exist. This is what setup provisions and
  * teardown schedules for deletion -- nothing else decides the set. */
-export function required({ smokeOnly = false } = {}) {
+export function required({ smokeOnly = false, roles = ROLES } = {}) {
+  if (!Array.isArray(roles) || roles.length === 0 ||
+      new Set(roles).size !== roles.length) {
+    throw new Error('key roles must be a non-empty list without duplicates');
+  }
+  for (const role of roles) {
+    if (!ROLES.includes(role)) {
+      throw new Error(`unknown key role "${role}"; expected one of ${ROLES.join(', ')}`);
+    }
+  }
   return specsFor({ smokeOnly }).flatMap((k) =>
-    ROLES.map((role) => ({ role, ...k, alias: alias(role, k.spec) })),
+    roles.map((role) => ({ role, ...k, alias: alias(role, k.spec) })),
   );
 }

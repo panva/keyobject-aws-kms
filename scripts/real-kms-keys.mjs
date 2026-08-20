@@ -19,6 +19,7 @@
  *   --profile <p>      AWS profile; required locally unless ambient credentials
  *                      are explicitly allowed
  *   --smoke            provision the smoke subset
+ *   --roles <scope>    provision test only, or all roles (default all)
  *   --manifest <path>  default build/real-kms-keys.json
  *   --window <days>    integer 7..30 (default 7)
  *   --concurrency <n>  positive integer (default 4)
@@ -40,7 +41,7 @@ import {
   pollUntil,
   sleep,
 } from './aws-cli.mjs';
-import { required } from '../test/inventory.mjs';
+import { required, ROLES } from '../test/inventory.mjs';
 
 const MANIFEST_VERSION = 1;
 const TAGS = Object.freeze({
@@ -63,6 +64,8 @@ function parseArgs(argv) {
     region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION,
     profile: process.env.AWS_PROFILE,
     smoke: false,
+    roles: [...ROLES],
+    rolesExplicit: false,
     manifest: 'build/real-kms-keys.json',
     manifestExplicit: false,
     window: 7,
@@ -89,6 +92,14 @@ function parseArgs(argv) {
       case '--window': opts.window = Number(next()); break;
       case '--concurrency': opts.concurrency = Number(next()); break;
       case '--smoke': opts.smoke = true; break;
+      case '--roles': {
+        const roles = next();
+        if (roles === 'test') opts.roles = ['test'];
+        else if (roles === 'all') opts.roles = [...ROLES];
+        else throw new Error('--roles must be test or all');
+        opts.rolesExplicit = true;
+        break;
+      }
       case '--sweep': opts.sweep = true; break;
       case '--dry-run': opts.dryRun = true; break;
       case '--json': opts.json = true; break;
@@ -101,6 +112,9 @@ function parseArgs(argv) {
   }
   if (!Number.isInteger(opts.window) || opts.window < 7 || opts.window > 30) {
     throw new Error('--window must be an integer from 7 through 30');
+  }
+  if (cmd !== 'setup' && opts.rolesExplicit) {
+    throw new Error('--roles is only valid with setup');
   }
   return { cmd, opts };
 }
@@ -216,6 +230,12 @@ function validateManifest(manifest, opts) {
   if (!manifest.keys || typeof manifest.keys !== 'object' || Array.isArray(manifest.keys)) {
     throw new Error('manifest keys must be an object');
   }
+  const roles = manifest.roles ?? ROLES;
+  if (!Array.isArray(roles) || roles.length === 0 ||
+      new Set(roles).size !== roles.length ||
+      roles.some((role) => !ROLES.includes(role))) {
+    throw new Error(`manifest roles must contain unique values from ${ROLES.join(', ')}`);
+  }
 
   for (const [name, key] of Object.entries(manifest.keys)) {
     const arn = parseKeyArn(key.arn);
@@ -224,6 +244,9 @@ function validateManifest(manifest, opts) {
     }
     if (key.keyId !== arn.keyId || key.role == null || key.spec == null) {
       throw new Error(`manifest key ${name} has inconsistent identity fields`);
+    }
+    if (!roles.includes(key.role)) {
+      throw new Error(`manifest key ${name} has role ${key.role} outside manifest roles`);
     }
     if (!key.alias?.startsWith(`${ALIAS_PREFIX}${manifest.runId}-`)) {
       throw new Error(`manifest key ${name} has an alias outside this run's namespace`);
@@ -253,7 +276,7 @@ function readManifest(opts, { optional = true } = {}) {
 
 async function setup(opts) {
   const runId = makeRunId();
-  const wanted = required({ smokeOnly: opts.smoke });
+  const wanted = required({ smokeOnly: opts.smoke, roles: opts.roles });
   log(`provisioning ${wanted.length} keys in ${opts.region} for ${runId}`);
 
   const results = await mapLimit(wanted, opts.concurrency, async (key) => {
@@ -349,6 +372,7 @@ async function setup(opts) {
     region: opts.region,
     runId,
     smoke: opts.smoke,
+    roles: opts.roles,
     createdAt: new Date().toISOString(),
     unavailable: [...new Set(unavailable)],
     keys,

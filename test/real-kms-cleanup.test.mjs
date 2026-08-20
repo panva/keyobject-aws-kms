@@ -283,6 +283,49 @@ describe('real KMS cleanup safety', () => {
     });
   }
 
+  test('rejects an invalid setup role scope before invoking AWS', () => {
+    const result = run(['setup', '--roles', 'other']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--roles must be test or all/);
+    assert.deepEqual(calls(), []);
+  });
+
+  test('rejects role selection outside setup before invoking AWS', () => {
+    const result = run(['teardown', '--roles', 'all']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--roles is only valid with setup/);
+    assert.deepEqual(calls(), []);
+  });
+
+  test('setup can provision only the focused test role', () => {
+    const result = run(
+      ['setup', '--smoke', '--roles', 'test', '--dry-run', '--json'],
+      { manifestPresent: false },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim().split('\n').at(-1));
+    assert.deepEqual(output.roles, ['test']);
+    assert.deepEqual(
+      Object.keys(output.keys).sort(),
+      [
+        'test-ECC_NIST_EDWARDS25519',
+        'test-ECC_NIST_P256',
+        'test-ML_DSA_44',
+        'test-RSA_2048',
+      ],
+    );
+  });
+
+  test('setup keeps both roles by default', () => {
+    const result = run(['setup', '--smoke', '--dry-run', '--json'], {
+      manifestPresent: false,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout.trim().split('\n').at(-1));
+    assert.deepEqual(output.roles, ['test', 'other']);
+    assert.equal(Object.keys(output.keys).length, 8);
+  });
+
   test('a missing teardown manifest is an error before invoking AWS', () => {
     const result = run(['teardown'], { manifestPresent: false });
     assert.notEqual(result.status, 0);
@@ -359,6 +402,26 @@ describe('real KMS cleanup safety', () => {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /invalid runId/);
     assert.deepEqual(destructiveCalls(), []);
+  });
+
+  test('rejects a manifest key outside its declared role scope', () => {
+    const result = run(['teardown'], {
+      value: manifest({ roles: ['other'] }),
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /role test outside manifest roles/);
+    assert.deepEqual(destructiveCalls(), []);
+  });
+
+  test('tears down a focused test-role manifest', () => {
+    const result = run(['teardown'], {
+      value: manifest({ roles: ['test'] }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const mutations = destructiveCalls();
+    assert.equal(mutations.length, 2);
+    assert.ok(mutations[0].includes('delete-alias'));
+    assert.ok(mutations[1].includes('schedule-key-deletion'));
   });
 
   test('rejects a foreign manifest account without destructive calls', () => {

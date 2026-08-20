@@ -4,6 +4,15 @@ import { readFileSync } from 'node:fs';
 
 const path = process.argv[2] ?? 'build/real-kms-keys.json';
 const manifest = JSON.parse(readFileSync(path, 'utf8'));
+assert.deepEqual(
+  manifest.roles,
+  ['test'],
+  'the focused real-KMS manifest must provision only the test role',
+);
+assert(
+  Object.values(manifest.keys ?? {}).every((key) => key.role === 'test'),
+  'the focused real-KMS manifest contains a key outside the test role',
+);
 const retainedSmokeSpecs = [
   'RSA_2048',
   'ECC_NIST_P256',
@@ -13,11 +22,9 @@ const retainedSmokeSpecs = [
 
 for (const spec of retainedSmokeSpecs) {
   assert(!manifest.unavailable?.includes(spec), `${spec} is unavailable in ${manifest.region}`);
-  for (const role of ['test', 'other']) {
-    const key = manifest.keys?.[`${role}-${spec}`];
-    assert(key, `${role}-${spec} was not provisioned`);
-    assert.equal(key.spec, spec);
-  }
+  const key = manifest.keys?.[`test-${spec}`];
+  assert(key, `test-${spec} was not provisioned`);
+  assert.equal(key.spec, spec);
 }
 
 console.log(`ok: real-KMS manifest covers ${retainedSmokeSpecs.join(', ')}`);

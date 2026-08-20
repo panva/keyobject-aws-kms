@@ -185,6 +185,10 @@ To provision the full matrix, omit `--smoke`. The same manifest must be used by
 setup, test, status, and teardown; override its location consistently with
 `--manifest` and `AWSKMS_TEST_MANIFEST` only when necessary.
 
+The focused CI pass adds `--roles test` because it does not run the wrong-key
+checks that need the paired `other` role. Normal setup defaults to `--roles all`;
+keep that default when running the complete local test suite.
+
 ## CI with GitHub OIDC
 
 The bootstrap can also register GitHub's OIDC provider and add repository trust

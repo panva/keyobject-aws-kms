@@ -744,7 +744,10 @@ jobs:
           role-to-assume: ${{ vars.AWSKMS_ADMIN_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - name: create test keys
-        run: node scripts/real-kms-keys.mjs setup $SUBSET
+        run: |
+          subset=()
+          if [[ -n $SUBSET ]]; then subset+=("$SUBSET"); fi
+          node scripts/real-kms-keys.mjs setup "${subset[@]}" --roles test
       - name: require every retained key family
         run: node scripts/ci-check-real-manifest.mjs build/real-kms-keys.json
       - name: run as the signer role
@@ -774,24 +777,17 @@ jobs:
             --endpoint-url "https://kms-fips.$AWS_REGION.amazonaws.com" \
             --no-cli-pager \
             --query KeyUsage --output text | grep -Fx SIGN_VERIFY
-          node --openssl-config="$AWSKMS_CNF" -e \
-            'require("node:assert/strict").equal(require("node:crypto").getFips(), 1)'
-          AWSKMS_AWS_LOG_ERRORS=1 AWSKMS_PROBE_KEY="$probe_key" \
-            node --openssl-config="$AWSKMS_CNF" -e '
-              const assert = require("node:assert/strict");
-              const { createPrivateKey, getFips } = require("node:crypto");
-              assert.equal(getFips(), 1);
-              const key = createPrivateKey({
-                key: new URL("aws-kms:key-id=" + process.env.AWSKMS_PROBE_KEY),
-              });
-              assert.equal(key.type, "private");
-            '
-          AWSKMS_TEST_REAL=1 node test/run.mjs 2>&1 | tee "$RUNNER_TEMP/real-fips.log"
+          AWSKMS_AWS_LOG_ERRORS=1 AWSKMS_TEST_REAL=1 \
+            node test/run.mjs test/real-kms-focused.mjs \
+              2>&1 | tee "$RUNNER_TEMP/real-fips.log"
           for suite in \
-            'RSA_2048 signing' \
-            'ECC_NIST_P256 signing' \
+            'RSA PKCS#1 v1.5 and RSA-PSS' \
+            'NIST ECDSA' \
             'Ed25519' \
-            'ML_DSA_44'; do
+            'ML-DSA with externally computed mu' \
+            'WebCrypto signs with every selected KeySpec' \
+            'a real KMS not-found response keeps its public error code' \
+            'real AWS KMS FIPS coverage'; do
             grep -F "✔ $suite" "$RUNNER_TEMP/real-fips.log"
           done
       - name: schedule this run's test keys for deletion
