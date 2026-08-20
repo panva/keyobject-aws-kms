@@ -71,6 +71,14 @@ fi
 grep -Fq 'if [[ $test_version == "$floor_version" ]]' \
   "$repo/scripts/ci-alma.sh" ||
   fail 'AlmaLinux does not reuse an identical floor and matrix Node runtime'
+awk '
+  /^  build\)$/ { build = 1 }
+  build && /if \[\[ \$backend == aws \]\]; then/ { aws = 1 }
+  build && aws && /install_node .*\.node-version/ { found = 1 }
+  build && /^  test\)$/ { exit(found ? 0 : 1) }
+  END { if (build) exit(found ? 0 : 1) }
+' "$repo/scripts/ci-alma.sh" ||
+  fail 'AlmaLinux must install the build-time Node runtime only for AWS packaging'
 
 alpine_test_prerequisites=$(awk '
   /^test\)$/ { occurrences++; if (occurrences == 1) inside = 1 }
@@ -83,6 +91,65 @@ if grep -Eq '(^|[[:space:]])(build-base|ccache|gcc|g\+\+|cmake|make|linux-header
   <<<"$alpine_test_prerequisites"; then
   fail 'Alpine test phase installs a compiler, CMake, make, or headers'
 fi
+awk '
+  /^build\)$/ { build = 1 }
+  build && /if \[ "\$BACKEND" = aws \]; then/ { aws = 1 }
+  build && aws && /install_node .*\.node-version/ { found = 1 }
+  build && /^test\)$/ { exit(found ? 0 : 1) }
+  END { if (build) exit(found ? 0 : 1) }
+' "$repo/scripts/ci-alpine.sh" ||
+  fail 'Alpine must install the build-time Node runtime only for AWS packaging'
+
+grep -Fq "    - if: inputs.phase == 'build' && inputs.backend == 'aws'" \
+  "$repo/.github/actions/ci-macos/action.yml" ||
+  fail 'macOS must install the build-time Node runtime only for AWS packaging'
+
+macos_action="$repo/.github/actions/ci-macos/action.yml"
+grep -Fq "key: openssl-v2-\${{ runner.os }}-\${{ runner.arch }}-\${{ env.AWSKMS_OPENSSL_FLOOR }}-osx\${{ env.AWSKMS_MACOS_FLOOR }}-\${{ hashFiles('scripts/build-openssl.sh') }}" \
+  "$macos_action" ||
+  fail 'macOS OpenSSL cache identity must include the deployment floor and builder'
+[[ $(grep -Fc 'MACOSX_DEPLOYMENT_TARGET: ${{ env.AWSKMS_MACOS_FLOOR }}' \
+  "$macos_action") -eq 2 ]] ||
+  fail 'macOS OpenSSL build and restore must use the declared deployment floor'
+
+# A cached prefix is valid only for the target requested by this invocation.
+# Fake Darwin and a complete prefix so these checks remain fast on Linux hosts.
+macos_openssl_fakebin="$temporary/macos-openssl-bin"
+mkdir -p "$macos_openssl_fakebin"
+printf '#!/bin/sh\nprintf "Darwin\\n"\n' > "$macos_openssl_fakebin/uname"
+printf '#!/bin/sh\nexit 97\n' > "$macos_openssl_fakebin/curl"
+chmod 755 "$macos_openssl_fakebin/uname" "$macos_openssl_fakebin/curl"
+make_cached_macos_openssl() {
+  local name=$1 target=$2
+  local prefix="$temporary/macos-openssl-$name"
+
+  mkdir -p "$prefix/include/openssl" "$prefix/lib" "$prefix/bin"
+  : > "$prefix/include/openssl/configuration.h"
+  printf '#!/bin/sh\nexit 0\n' > "$prefix/bin/openssl"
+  chmod 755 "$prefix/bin/openssl"
+  printf '%s\n' "$target" > "$prefix/.awskms-macos-deployment-target"
+  printf '%s\n' "$prefix"
+}
+
+explicit_macos_prefix=$(make_cached_macos_openssl explicit 14.2)
+PATH="$macos_openssl_fakebin:$PATH" MACOSX_DEPLOYMENT_TARGET=14.2 \
+  AWSKMS_MACOS_FLOOR=13.5 \
+  "$repo/scripts/build-openssl.sh" 3.0.21 "$explicit_macos_prefix" >/dev/null ||
+  fail 'an explicit macOS deployment target must take precedence'
+
+configured_macos_prefix=$(make_cached_macos_openssl configured 12.3)
+(
+  unset MACOSX_DEPLOYMENT_TARGET
+  PATH="$macos_openssl_fakebin:$PATH" AWSKMS_MACOS_FLOOR=12.3 \
+    "$repo/scripts/build-openssl.sh" 3.0.21 "$configured_macos_prefix" >/dev/null
+) || fail 'the configured macOS floor must be used when no explicit target exists'
+
+default_macos_prefix=$(make_cached_macos_openssl default 13.5)
+(
+  unset MACOSX_DEPLOYMENT_TARGET AWSKMS_MACOS_FLOOR
+  PATH="$macos_openssl_fakebin:$PATH" \
+    "$repo/scripts/build-openssl.sh" 3.0.21 "$default_macos_prefix" >/dev/null
+) || fail 'standalone Darwin OpenSSL builds must default to macOS 13.5'
 
 for source in "$repo/scripts/ci-alma.sh" "$repo/scripts/ci-alpine.sh"; do
   grep -Fq -- '-DCMAKE_C_COMPILER_LAUNCHER=ccache' "$source" ||

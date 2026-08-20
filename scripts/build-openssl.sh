@@ -16,14 +16,28 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 V=${1:?usage: build-openssl.sh <version> [prefix]}
 PREFIX=${2:-$HOME/.cache/awskms-openssl/$V}
 FIPS=${AWSKMS_OPENSSL_FIPS:-0}
-case $(uname -s) in
-  Darwin) FIPS_MODULE="$PREFIX/lib/ossl-modules/fips.dylib" ;;
+PLATFORM=$(uname -s)
+MACOS_DEPLOYMENT_MARKER=
+case $PLATFORM in
+  Darwin)
+    FIPS_MODULE="$PREFIX/lib/ossl-modules/fips.dylib"
+    # Clang otherwise targets the runner's host release. Keep standalone builds
+    # on the supported floor while allowing callers to request another target.
+    MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-${AWSKMS_MACOS_FLOOR:-13.5}}
+    export MACOSX_DEPLOYMENT_TARGET
+    MACOS_DEPLOYMENT_MARKER="$PREFIX/.awskms-macos-deployment-target"
+    ;;
   *) FIPS_MODULE="$PREFIX/lib/ossl-modules/fips.so" ;;
 esac
 
-# Require generated headers, libraries, and the CLI before accepting a cache.
+# Require generated headers, libraries, the CLI, and the exact macOS deployment
+# target before accepting a cache or an existing local prefix.
 if [ -f "$PREFIX/include/openssl/configuration.h" ] &&
    [ -d "$PREFIX/lib" ] && [ -x "$PREFIX/bin/openssl" ] &&
+   { [ "$PLATFORM" != Darwin ] || {
+     [ -f "$MACOS_DEPLOYMENT_MARKER" ] &&
+       [ "$(cat "$MACOS_DEPLOYMENT_MARKER")" = "$MACOSX_DEPLOYMENT_TARGET" ];
+   }; } &&
    { [ "$FIPS" != 1 ] || {
      [ -f "$PREFIX/.awskms-fips-enabled" ] &&
        [ -f "$FIPS_MODULE" ] &&
@@ -58,6 +72,9 @@ if [ "$FIPS" = 1 ]; then
   [ -f "$FIPS_MODULE" ]
   [ -f "$PREFIX/ssl/fipsmodule.cnf" ]
   touch "$PREFIX/.awskms-fips-enabled"
+fi
+if [ "$PLATFORM" = Darwin ]; then
+  printf '%s\n' "$MACOSX_DEPLOYMENT_TARGET" > "$MACOS_DEPLOYMENT_MARKER"
 fi
 
 echo "openssl $V installed at $PREFIX"

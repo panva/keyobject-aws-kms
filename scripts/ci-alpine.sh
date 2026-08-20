@@ -131,18 +131,20 @@ build)
     ccache --zero-stats
   fi
 
-  say "node"
-  # The floor. nodejs.org/dist publishes no musl builds at all -- that is what
-  # nodejs/unofficial-builds exists for -- so setup-node cannot serve this leg.
-  # Pinning to .node-version keeps musl on the SAME floor as every other target.
-  #
-  # "Unofficial" is about who builds it, not what it is: the OpenSSL surface
-  # these expose was compared symbol for symbol against the node:26-alpine
-  # image's own node and is IDENTICAL (4648 exported OpenSSL symbols, zero
-  # difference in either direction, across two different node versions). Since
-  # binding those undefined symbols to the host is the entire mechanism this
-  # provider rests on, the two are interchangeable.
-  install_node "$(cat .node-version)"
+  if [ "$BACKEND" = aws ]; then
+    say "node"
+    # The floor. nodejs.org/dist publishes no musl builds at all -- that is what
+    # nodejs/unofficial-builds exists for -- so setup-node cannot serve this leg.
+    # Pinning to .node-version keeps musl on the SAME floor as every other target.
+    #
+    # "Unofficial" is about who builds it, not what it is: the OpenSSL surface
+    # these expose was compared symbol for symbol against the node:26-alpine
+    # image's own node and is IDENTICAL (4648 exported OpenSSL symbols, zero
+    # difference in either direction, across two different node versions). Since
+    # binding those undefined symbols to the host is the entire mechanism this
+    # provider rests on, the two are interchangeable.
+    install_node "$(cat .node-version)"
+  fi
 
   say "openssl $OSSL"
   # Build against the common OpenSSL floor rather than Alpine's newer headers.

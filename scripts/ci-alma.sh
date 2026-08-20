@@ -173,8 +173,10 @@ case "$phase" in
   build)
     openssl_prefix="$PWD/.ossl-glibc/$argument"
     scripts/build-openssl.sh "$argument" "$openssl_prefix"
-    install_node "$(cat .node-version)" /tmp/node
-    export PATH="/tmp/node/bin:$PATH"
+    if [[ $backend == aws ]]; then
+      install_node "$(cat .node-version)" /tmp/node
+      export PATH="/tmp/node/bin:$PATH"
+    fi
 
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
       -DAWSKMS_BACKEND="$backend" \

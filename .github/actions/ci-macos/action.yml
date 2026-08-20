@@ -23,7 +23,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - if: inputs.phase == 'build'
+    - if: inputs.phase == 'build' && inputs.backend == 'aws'
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version-file: .node-version
@@ -51,11 +51,13 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/awskms-openssl/${{ env.AWSKMS_OPENSSL_FLOOR }}
-        key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
+        key: openssl-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}-osx${{ env.AWSKMS_MACOS_FLOOR }}-${{ hashFiles('scripts/build-openssl.sh') }}
 
     - name: build OpenSSL floor
       if: inputs.phase == 'build'
       shell: bash
+      env:
+        MACOSX_DEPLOYMENT_TARGET: ${{ env.AWSKMS_MACOS_FLOOR }}
       run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
 
     - name: cache AWS SDK source
@@ -143,6 +145,8 @@ runs:
     - name: restore the OpenSSL floor used by the unload harness
       if: inputs.phase == 'test'
       shell: bash
+      env:
+        MACOSX_DEPLOYMENT_TARGET: ${{ env.AWSKMS_MACOS_FLOOR }}
       run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
 
     - if: inputs.phase == 'test'
