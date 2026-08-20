@@ -47,6 +47,10 @@ build|ossl)
   # OpenSSL's own build needs perl.
   apk add --no-cache build-base cmake git openssl-dev openssl linux-headers \
     perl bash tar xz curl jq
+  if [ "$PHASE" = build ] && [ "$BACKEND" = aws ]; then
+    apk add --no-cache ccache
+    ccache --version | grep -Eq '^ccache version 4\.'
+  fi
 
   # The workspace was checked out on the host by a different uid, and the aws
   # backend runs git to fetch the SDK. Without this every git command dies on
@@ -117,6 +121,16 @@ case "$PHASE" in
 build)
   OSSL=$ARG
 
+  if [ "$BACKEND" = aws ]; then
+    CCACHE_DIR=${AWSKMS_CCACHE_DIR:-$PWD/build/.ccache}
+    CCACHE_COMPILERCHECK=content
+    CCACHE_COMPRESS=1
+    CCACHE_MAXSIZE=500M
+    export CCACHE_DIR CCACHE_COMPILERCHECK CCACHE_COMPRESS CCACHE_MAXSIZE
+    mkdir -p "$CCACHE_DIR"
+    ccache --zero-stats
+  fi
+
   say "node"
   # The floor. nodejs.org/dist publishes no musl builds at all -- that is what
   # nodejs/unofficial-builds exists for -- so setup-node cannot serve this leg.
@@ -138,12 +152,19 @@ build)
   scripts/build-openssl.sh "$OSSL" "$OSSL_PREFIX"
 
   say "configure ($BACKEND)"
-  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAWSKMS_BACKEND="$BACKEND" \
+  set -- cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DAWSKMS_BACKEND="$BACKEND" \
     -DOPENSSL_ROOT_DIR="$OSSL_PREFIX" -DCMAKE_PREFIX_PATH="$OSSL_PREFIX" \
     -DCMAKE_MODULE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+  if [ "$BACKEND" = aws ]; then
+    set -- "$@" -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+  fi
+  "$@"
 
   say "build"
   cmake --build build --parallel
+  if [ "$BACKEND" = aws ]; then ccache --show-stats; fi
 
   say "unit tests"
   # Node-independent -- awskms_unit is a pure C executable linking only

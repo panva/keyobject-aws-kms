@@ -36,6 +36,11 @@ install_toolchain_prerequisites() {
     gcc-toolset-13-gcc-13.3.1-2.2.el8_10 \
     gcc-toolset-13-gcc-c++-13.3.1-2.2.el8_10 \
     gcc-toolset-13-libstdc++-devel-13.3.1-2.2.el8_10
+  if [[ $phase == build && $backend == aws ]]; then
+    dnf -q -y install epel-release-8-22.el8
+    dnf -q -y install ccache-3.7.7-1.el8
+    [[ $(ccache --version | awk 'NR == 1 { print $3 }') == 3.7.7 ]]
+  fi
 }
 
 case "$phase" in
@@ -96,6 +101,20 @@ if [[ $phase != test ]]; then
   tar xzf "/tmp/$cmake_archive" -C /opt/cmake --strip-components=1
   export PATH="/opt/cmake/bin:$PATH"
   [[ $(cmake --version | awk 'NR == 1 { print $3 }') == "$cmake_version" ]]
+fi
+
+compiler_cache_args=()
+if [[ $phase == build && $backend == aws ]]; then
+  export CCACHE_DIR=${AWSKMS_CCACHE_DIR:-$PWD/build/.ccache}
+  export CCACHE_COMPILERCHECK=content
+  export CCACHE_COMPRESS=1
+  export CCACHE_MAXSIZE=500M
+  mkdir -p "$CCACHE_DIR"
+  ccache --zero-stats
+  compiler_cache_args=(
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+  )
 fi
 
 glibc=$(ldd --version | awk 'NR == 1 { print $NF }')
@@ -161,8 +180,10 @@ case "$phase" in
       -DAWSKMS_BACKEND="$backend" \
       -DOPENSSL_ROOT_DIR="$openssl_prefix" \
       -DCMAKE_PREFIX_PATH="$openssl_prefix" \
-      -DCMAKE_MODULE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+      -DCMAKE_MODULE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+      "${compiler_cache_args[@]}"
     cmake --build build --parallel
+    if [[ $backend == aws ]]; then ccache --show-stats; fi
     ctest --test-dir build -R '^unit$' --no-tests=error --output-on-failure
     scripts/check-symbol-floor.sh build/aws-kms.so "$openssl_prefix"
     scripts/check-binary-compat.sh linux build/aws-kms.so "$arch" 2.28

@@ -54,7 +54,7 @@ extract_function() {
 alma_test_prerequisites=$(extract_function install_test_prerequisites \
   "$repo/scripts/ci-alma.sh")
 [[ -n $alma_test_prerequisites ]] || fail 'missing AlmaLinux test prerequisites'
-if grep -Eq '(gcc|g\+\+|cmake|make|headers|-devel)' \
+if grep -Eq '(ccache|gcc|g\+\+|cmake|make|headers|-devel)' \
   <<<"$alma_test_prerequisites"; then
   fail 'AlmaLinux test phase installs a compiler, CMake, make, or headers'
 fi
@@ -69,10 +69,23 @@ alpine_test_prerequisites=$(awk '
   packages && $0 !~ /\\$/ { exit }
 ' "$repo/scripts/ci-alpine.sh")
 [[ -n $alpine_test_prerequisites ]] || fail 'missing Alpine test prerequisites'
-if grep -Eq '(^|[[:space:]])(build-base|gcc|g\+\+|cmake|make|linux-headers|[[:alnum:]+._-]+-dev)([[:space:]\\]|$)' \
+if grep -Eq '(^|[[:space:]])(build-base|ccache|gcc|g\+\+|cmake|make|linux-headers|[[:alnum:]+._-]+-dev)([[:space:]\\]|$)' \
   <<<"$alpine_test_prerequisites"; then
   fail 'Alpine test phase installs a compiler, CMake, make, or headers'
 fi
+
+for source in "$repo/scripts/ci-alma.sh" "$repo/scripts/ci-alpine.sh"; do
+  grep -Fq -- '-DCMAKE_C_COMPILER_LAUNCHER=ccache' "$source" ||
+    fail "$(basename "$source") does not cache C compilations"
+  grep -Fq -- '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache' "$source" ||
+    fail "$(basename "$source") does not cache C++ compilations"
+done
+[[ $(grep -Fc 'name: cache compiled AWS dependencies' \
+  "$repo/.github/workflows/ci.yml") == 3 ]] ||
+  fail 'CI must cache compiled AWS dependencies for glibc, macOS and musl'
+[[ $(grep -Fc 'name: cache AWS SDK source' \
+  "$repo/.github/workflows/ci.yml") == 3 ]] ||
+  fail 'CI must restore AWS SDK sources for glibc, macOS and musl'
 if grep -Eq 'gcc -print-file-name=lib(asan|ubsan)\.so([")])' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'LD_PRELOAD must use sanitizer runtime DSOs, not linker scripts'
