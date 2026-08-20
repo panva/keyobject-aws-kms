@@ -1,6 +1,6 @@
 {
   "name": "@keyobject/aws-kms",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "AWS KMS asymmetric signing keys as Node.js KeyObject instances",
   "keywords": [
     "aws",
@@ -65,11 +65,11 @@
     "node": ">=26.7.0"
   },
   "optionalDependencies": {
-    "@keyobject/aws-kms-darwin-arm64": "0.0.0",
-    "@keyobject/aws-kms-linux-arm64": "0.0.0",
-    "@keyobject/aws-kms-linux-x64": "0.0.0",
-    "@keyobject/aws-kms-linuxmusl-arm64": "0.0.0",
-    "@keyobject/aws-kms-linuxmusl-x64": "0.0.0"
+    "@keyobject/aws-kms-darwin-arm64": "0.0.1",
+    "@keyobject/aws-kms-linux-arm64": "0.0.1",
+    "@keyobject/aws-kms-linux-x64": "0.0.1",
+    "@keyobject/aws-kms-linuxmusl-arm64": "0.0.1",
+    "@keyobject/aws-kms-linuxmusl-x64": "0.0.1"
   },
   "bugs": {
     "url": "https://github.com/panva/keyobject-aws-kms/issues"
