@@ -1,0 +1,52 @@
+name: OpenSSL runtime compatibility
+description: Load one exact backend artifact with one OpenSSL runtime.
+
+inputs:
+  version:
+    description: OpenSSL runtime version
+    required: true
+  backend:
+    description: stub or aws
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/awskms-openssl/${{ inputs.version }}
+        key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
+
+    - shell: bash
+      run: scripts/build-openssl.sh '${{ inputs.version }}'
+
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: module-glibc-x64-${{ inputs.backend }}
+        path: build
+
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      if: startsWith(inputs.version, '3.0.')
+      with:
+        node-version: 20.20.2
+
+    - name: assert the JavaScript registration error on OpenSSL 3.0
+      if: startsWith(inputs.version, '3.0.')
+      shell: bash
+      run: node scripts/ci-check-register-node.mjs build/aws-kms.so
+
+    - name: load and exercise the registrar
+      shell: bash
+      run: |
+        set -euo pipefail
+        prefix="$HOME/.cache/awskms-openssl/${{ inputs.version }}"
+        export PATH="$prefix/bin:$PATH"
+        export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        output=$(openssl version)
+        got=$(sed -n 's/.*Library: OpenSSL \([0-9][0-9.]*\).*/\1/p' <<<"$output")
+        got=${got:-$(awk '{print $2}' <<<"$output")}
+        [ "$got" = '${{ inputs.version }}' ]
+        scripts/check-symbol-floor.sh build/aws-kms.so "$prefix"
+        scripts/check-load.sh build
+        if [[ '${{ inputs.version }}' == 3.0.* ]]; then expected=unsupported; else expected=supported; fi
+        python3 scripts/ci-check-register.py build/aws-kms.so "$prefix" "$expected"

@@ -51,6 +51,16 @@ extract_function() {
   ' "$source"
 }
 
+extract_yaml_job() {
+  local job_name=$1 workflow=$2
+
+  awk -v header="  $job_name:" '
+    $0 == header { inside = 1 }
+    inside && $0 != header && $0 ~ /^  [[:alnum:]_-]+:$/ { exit }
+    inside { print }
+  ' "$workflow"
+}
+
 alma_test_prerequisites=$(extract_function install_test_prerequisites \
   "$repo/scripts/ci-alma.sh")
 [[ -n $alma_test_prerequisites ]] || fail 'missing AlmaLinux test prerequisites'
@@ -84,12 +94,100 @@ grep -Fq 'epel-release-8-21.el8' "$repo/scripts/ci-alma.sh" ||
   fail 'AlmaLinux must bootstrap EPEL from the release available in Extras'
 grep -Fq 'ccache-3.7.7-1.el8' "$repo/scripts/ci-alma.sh" ||
   fail 'AlmaLinux must pin the compiler cache after enabling EPEL'
-[[ $(grep -Fc 'name: cache compiled AWS dependencies' \
-  "$repo/.github/workflows/ci.yml") == 3 ]] ||
-  fail 'CI must cache compiled AWS dependencies for glibc, macOS and musl'
-[[ $(grep -Fc 'name: cache AWS SDK source' \
-  "$repo/.github/workflows/ci.yml") == 3 ]] ||
-  fail 'CI must restore AWS SDK sources for glibc, macOS and musl'
+ci_cache_actions=(
+  "$repo/.github/actions/ci-glibc/action.yml"
+  "$repo/.github/actions/ci-macos/action.yml"
+  "$repo/.github/actions/ci-musl/action.yml"
+)
+for action_file in "${ci_cache_actions[@]}"; do
+  [[ $(grep -Fc 'name: cache compiled AWS dependencies' "$action_file") -eq 1 ]] ||
+    fail "$(basename "$(dirname "$action_file")") must cache compiled AWS dependencies"
+  [[ $(grep -Fc 'name: cache AWS SDK source' "$action_file") -eq 1 ]] ||
+    fail "$(basename "$(dirname "$action_file")") must restore AWS SDK sources"
+done
+
+workflow="$repo/.github/workflows/ci.yml"
+[[ $(grep -Ec '^  build-(glibc|macos|musl-experimental)-(x64|arm64)-(stub|aws):$' \
+  "$workflow") -eq 12 ]] || fail 'CI must define exactly 12 coordinate producers'
+[[ $(grep -Ec '^  test-(glibc|macos|musl-experimental)-(x64|arm64)-(stub|aws):$' \
+  "$workflow") -eq 12 ]] || fail 'CI must define exactly 12 coordinate consumers'
+for legacy_job in build-glibc build-macos build-musl-experimental \
+  test-glibc test-macos test-musl-experimental openssl-runtime; do
+  [[ -z $(extract_yaml_job "$legacy_job" "$workflow") ]] ||
+    fail "legacy aggregate CI job remains: $legacy_job"
+done
+for family in glibc macos musl-experimental; do
+  case $family in
+    glibc) action=ci-glibc ;;
+    macos) action=ci-macos ;;
+    musl-experimental) action=ci-musl ;;
+  esac
+  for arch in x64 arm64; do
+    for backend in stub aws; do
+      producer="build-$family-$arch-$backend"
+      consumer="test-$family-$arch-$backend"
+      producer_job=$(extract_yaml_job "$producer" "$workflow")
+      consumer_job=$(extract_yaml_job "$consumer" "$workflow")
+      [[ -n $producer_job ]] || fail "missing exact CI producer $producer"
+      [[ -n $consumer_job ]] || fail "missing exact CI consumer $consumer"
+      grep -Fq "uses: ./.github/actions/$action" <<<"$producer_job" ||
+        fail "$producer does not use $action"
+      grep -Fq '          phase: build' <<<"$producer_job" ||
+        fail "$producer does not select the build phase"
+      grep -Fq "          arch: $arch" <<<"$producer_job" ||
+        fail "$producer has the wrong architecture input"
+      grep -Fq "          backend: $backend" <<<"$producer_job" ||
+        fail "$producer has the wrong backend input"
+      grep -Fq "uses: ./.github/actions/$action" <<<"$consumer_job" ||
+        fail "$consumer does not use $action"
+      grep -Fq '          phase: test' <<<"$consumer_job" ||
+        fail "$consumer does not select the test phase"
+      grep -Fq "          arch: $arch" <<<"$consumer_job" ||
+        fail "$consumer has the wrong architecture input"
+      grep -Fq "          backend: $backend" <<<"$consumer_job" ||
+        fail "$consumer has the wrong backend input"
+      grep -Fq '          node-version: ${{ matrix.node-version }}' \
+        <<<"$consumer_job" || fail "$consumer does not pass its Node version"
+      grep -Fq "needs: [node-versions, $producer]" <<<"$consumer_job" ||
+        fail "$consumer waits on more than its exact producer"
+      if [[ $family != macos ]]; then
+        grep -Eq '^          image: [^[:space:]]+$' <<<"$producer_job" ||
+          fail "$producer does not pass its pinned container image"
+        grep -Eq '^          image: [^[:space:]]+$' <<<"$consumer_job" ||
+          fail "$consumer does not pass its pinned container image"
+      elif ! grep -Eq '^          binary-arch: (x86_64|arm64)$' \
+        <<<"$producer_job"; then
+        fail "$producer does not pass its Mach-O architecture"
+      fi
+      if [[ $family == musl-experimental ]]; then
+        grep -Fq "if: always() && needs.node-versions.result == 'success' && needs.$producer.result == 'success'" \
+          <<<"$consumer_job" ||
+          fail "$consumer lost the experimental musl result guard"
+      fi
+    done
+  done
+done
+
+if grep -Eq 'matrix\.(platform|backend)' "$workflow"; then
+  fail 'CI must not retain platform/backend matrix-wide build barriers'
+fi
+for backend in stub aws; do
+  runtime_job=$(extract_yaml_job "openssl-runtime-$backend" "$workflow")
+  grep -Fq "needs: build-glibc-x64-$backend" <<<"$runtime_job" ||
+    fail "OpenSSL $backend runtime does not wait on its exact producer"
+  grep -Fq 'uses: ./.github/actions/ci-openssl-runtime' <<<"$runtime_job" ||
+    fail "OpenSSL $backend runtime does not use the runtime action"
+  grep -Fq '          version: ${{ matrix.version }}' <<<"$runtime_job" ||
+    fail "OpenSSL $backend runtime does not pass its version"
+  grep -Fq "          backend: $backend" <<<"$runtime_job" ||
+    fail "OpenSSL $backend runtime has the wrong backend input"
+done
+required_job=$(extract_yaml_job required-capable "$workflow")
+grep -Fq 'needs: build-glibc-x64-stub' <<<"$required_job" ||
+  fail 'mandatory-capable lane does not wait on the x64 stub producer'
+real_kms_job=$(extract_yaml_job real-kms "$workflow")
+grep -Fq 'needs: build-glibc-x64-aws' <<<"$real_kms_job" ||
+  fail 'real-KMS lane does not wait on the x64 AWS producer'
 if grep -Eq 'gcc -print-file-name=lib(asan|ubsan)\.so([")])' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'LD_PRELOAD must use sanitizer runtime DSOs, not linker scripts'

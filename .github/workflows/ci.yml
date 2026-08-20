@@ -48,318 +48,253 @@ jobs:
     with:
       min: 26
 
-  build-glibc:
-    name: build glibc 2.28 / ${{ matrix.platform.arch }} / ${{ matrix.backend }}
+  build-glibc-x64-stub:
+    name: build glibc 2.28 / x64 / stub
     needs: gate
-    runs-on: ${{ matrix.platform.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - os: ubuntu-latest
-            arch: x64
-            image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
-          - os: ubuntu-24.04-arm
-            arch: arm64
-            image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
-        backend: [stub, aws]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: cache OpenSSL floor
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/ci-glibc
         with:
-          path: .ossl-glibc/${{ env.AWSKMS_OPENSSL_FLOOR }}
-          key: openssl-alma8-${{ matrix.platform.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
-
-      - name: cache compiled AWS dependencies
-        if: matrix.backend == 'aws'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: build/.ccache
-          key: ccache-v1-alma8-${{ matrix.platform.arch }}-gcc13.3.1-ossl${{ env.AWSKMS_OPENSSL_FLOOR }}-${{ github.sha }}
-          restore-keys: |
-            ccache-v1-alma8-${{ matrix.platform.arch }}-gcc13.3.1-ossl${{ env.AWSKMS_OPENSSL_FLOOR }}-
-
-      - name: cache AWS SDK source
-        if: matrix.backend == 'aws'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: build/_deps/aws-sdk-cpp
-          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake', 'scripts/patch-s2n-empty-kdf.sh', 'scripts/patch-s2n-openssl4.sh', 'scripts/patch-aws-sdk-keyspec.sh') }}
-
-      - name: build and verify in pinned AlmaLinux 8
-        run: |
-          set -euo pipefail
-          docker run --rm -v "$PWD:/src" -w /src \
-            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
-            '${{ matrix.platform.image }}' \
-            ./scripts/ci-alma.sh build '${{ matrix.backend }}' \
-              '${{ matrix.platform.arch }}' '${{ env.AWSKMS_OPENSSL_FLOOR }}'
-
-      - name: upload archive dry-run
-        if: matrix.backend == 'aws'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: awskms-linux-${{ matrix.platform.arch }}
-          path: awskms-*-linux-${{ matrix.platform.arch }}.tar.gz
-          if-no-files-found: error
-
-      - name: upload module for tests
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: module-glibc-${{ matrix.platform.arch }}-${{ matrix.backend }}
-          retention-days: 1
-          path: |
-            build/aws-kms.so
-            build/awskms.cnf
-            build/awskms.relocatable.cnf
-            build/awskms-backend
-            build/awskms-dependencies
-            build/awskms-stub-mldsa
-            build/awskms_provider_unload
-          if-no-files-found: error
-
-  build-macos:
-    name: build macOS / ${{ matrix.platform.arch }} / ${{ matrix.backend }}
+          phase: build
+          arch: x64
+          backend: stub
+          image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
+  build-glibc-x64-aws:
+    name: build glibc 2.28 / x64 / aws
     needs: gate
-    runs-on: ${{ matrix.platform.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - os: macos-latest
-            arch: arm64
-            binary_arch: arm64
-          - os: macos-15-intel
-            arch: x64
-            binary_arch: x86_64
-        backend: [stub, aws]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: ./.github/actions/ci-glibc
         with:
-          node-version-file: .node-version
-
-      - name: install compiler cache
-        if: matrix.backend == 'aws'
-        id: ccache
-        run: |
-          if ! command -v ccache >/dev/null; then brew install ccache; fi
-          version=$(ccache --version | awk 'NR == 1 { print $3 }')
-          [[ $version =~ ^4\.[0-9]+\.[0-9]+$ ]]
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: cache compiled AWS dependencies
-        if: matrix.backend == 'aws'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          phase: build
+          arch: x64
+          backend: aws
+          image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
+  build-glibc-arm64-stub:
+    name: build glibc 2.28 / arm64 / stub
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
         with:
-          path: build/.ccache
-          key: ccache-v1-macos-${{ matrix.platform.arch }}-ccache${{ steps.ccache.outputs.version }}-osx${{ env.AWSKMS_MACOS_FLOOR }}-ossl${{ env.AWSKMS_OPENSSL_FLOOR }}-${{ github.sha }}
-          restore-keys: |
-            ccache-v1-macos-${{ matrix.platform.arch }}-ccache${{ steps.ccache.outputs.version }}-osx${{ env.AWSKMS_MACOS_FLOOR }}-ossl${{ env.AWSKMS_OPENSSL_FLOOR }}-
-
-      - name: cache OpenSSL floor
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          phase: build
+          arch: arm64
+          backend: stub
+          image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
+  build-glibc-arm64-aws:
+    name: build glibc 2.28 / arm64 / aws
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
         with:
-          path: ~/.cache/awskms-openssl/${{ env.AWSKMS_OPENSSL_FLOOR }}
-          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
-
-      - name: build OpenSSL floor
-        run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
-
-      - name: cache AWS SDK source
-        if: matrix.backend == 'aws'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+          phase: build
+          arch: arm64
+          backend: aws
+          image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
+  build-macos-arm64-stub:
+    name: build macOS / arm64 / stub
+    needs: gate
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
         with:
-          path: build/_deps/aws-sdk-cpp
-          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake', 'scripts/patch-s2n-empty-kdf.sh', 'scripts/patch-s2n-openssl4.sh', 'scripts/patch-aws-sdk-keyspec.sh') }}
-
-      - name: configure, build, and verify
-        run: |
-          set -euo pipefail
-          prefix="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
-          cache_args=()
-          if [[ '${{ matrix.backend }}' == aws ]]; then
-            export CCACHE_DIR="$PWD/build/.ccache"
-            export CCACHE_COMPILERCHECK=content
-            export CCACHE_COMPRESS=1
-            export CCACHE_MAXSIZE=500M
-            mkdir -p "$CCACHE_DIR"
-            ccache --zero-stats
-            cache_args=(
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-            )
-          fi
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-            -DAWSKMS_BACKEND='${{ matrix.backend }}' \
-            -DOPENSSL_ROOT_DIR="$prefix" -DCMAKE_PREFIX_PATH="$prefix" \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET="$AWSKMS_MACOS_FLOOR" \
-            "${cache_args[@]}"
-          cmake --build build --parallel
-          if [[ '${{ matrix.backend }}' == aws ]]; then ccache --show-stats; fi
-          ctest --test-dir build -R '^unit$' --no-tests=error --output-on-failure
-          scripts/check-symbol-floor.sh build/aws-kms.dylib "$prefix"
-          scripts/check-binary-compat.sh macos build/aws-kms.dylib \
-            '${{ matrix.platform.binary_arch }}' "$AWSKMS_MACOS_FLOOR"
-          scripts/ci-policy-gate.sh artifact build/aws-kms.dylib
-
-      - name: stage and exercise archive dry-run
-        if: matrix.backend == 'aws'
-        id: archive
-        run: |
-          set -euo pipefail
-          target="darwin-${{ matrix.platform.arch }}"
-          version=$(node -p "require('./npm/core/package.json').version")
-          directory="awskms-$version-$target"
-          archive="$directory.tar.gz"
-          scripts/package-archive.sh build "$target" .
-          scripts/ci-policy-gate.sh artifact build/aws-kms.dylib "$archive"
-          unpack="$RUNNER_TEMP/unpack"
-          mkdir -p "$unpack"
-          tar xzf "$archive" -C "$unpack"
-          AWSKMS_MODULE="$unpack/$directory/aws-kms.dylib" \
-            node --openssl-config="$unpack/$directory/awskms.cnf" \
-            "$unpack/$directory/check.mjs"
-          echo "target=$target" >> "$GITHUB_OUTPUT"
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
-
-      - name: upload archive dry-run
-        if: matrix.backend == 'aws'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          phase: build
+          arch: arm64
+          binary-arch: arm64
+          backend: stub
+  build-macos-arm64-aws:
+    name: build macOS / arm64 / aws
+    needs: gate
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
         with:
-          name: awskms-${{ steps.archive.outputs.target }}
-          path: ${{ steps.archive.outputs.archive }}
-          if-no-files-found: error
-
-      - name: upload module for tests
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          phase: build
+          arch: arm64
+          binary-arch: arm64
+          backend: aws
+  build-macos-x64-stub:
+    name: build macOS / x64 / stub
+    needs: gate
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
         with:
-          name: module-macos-${{ matrix.platform.arch }}-${{ matrix.backend }}
-          retention-days: 1
-          path: |
-            build/aws-kms.dylib
-            build/awskms.cnf
-            build/awskms.relocatable.cnf
-            build/awskms-backend
-            build/awskms-dependencies
-            build/awskms-stub-mldsa
-            build/awskms_provider_unload
-          if-no-files-found: error
-
-  test-glibc:
-    name: test glibc / ${{ matrix.platform.arch }} / Node ${{ matrix.node-version }} / ${{ matrix.backend }}
-    needs: [node-versions, build-glibc]
-    runs-on: ${{ matrix.platform.os }}
+          phase: build
+          arch: x64
+          binary-arch: x86_64
+          backend: stub
+  build-macos-x64-aws:
+    name: build macOS / x64 / aws
+    needs: gate
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
+        with:
+          phase: build
+          arch: x64
+          binary-arch: x86_64
+          backend: aws
+  test-glibc-x64-stub:
+    name: test glibc / x64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-glibc-x64-stub]
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - os: ubuntu-latest
-            arch: x64
-            image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
-          - os: ubuntu-24.04-arm
-            arch: arm64
-            image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
-        backend: [stub, aws]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/ci-glibc
         with:
-          path: .ossl-glibc/${{ env.AWSKMS_OPENSSL_FLOOR }}
-          key: openssl-alma8-${{ matrix.platform.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          phase: test
+          arch: x64
+          backend: stub
+          image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
+          node-version: ${{ matrix.node-version }}
+  test-glibc-x64-aws:
+    name: test glibc / x64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-glibc-x64-aws]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
         with:
-          name: module-glibc-${{ matrix.platform.arch }}-${{ matrix.backend }}
-          path: build
-      - name: capability probe and tests in pinned AlmaLinux 8
-        run: |
-          set -euo pipefail
-          docker run --rm -v "$PWD:/src" -w /src \
-            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
-            '${{ matrix.platform.image }}' \
-            ./scripts/ci-alma.sh test '${{ matrix.backend }}' \
-              '${{ matrix.platform.arch }}' '${{ matrix.node-version }}' \
-              '${{ env.AWSKMS_OPENSSL_FLOOR }}'
-
-  test-macos:
-    name: test macOS / ${{ matrix.platform.arch }} / Node ${{ matrix.node-version }} / ${{ matrix.backend }}
-    needs: [node-versions, build-macos]
-    runs-on: ${{ matrix.platform.os }}
+          phase: test
+          arch: x64
+          backend: aws
+          image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
+          node-version: ${{ matrix.node-version }}
+  test-glibc-arm64-stub:
+    name: test glibc / arm64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-glibc-arm64-stub]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: test
+          arch: arm64
+          backend: stub
+          image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
+          node-version: ${{ matrix.node-version }}
+  test-glibc-arm64-aws:
+    name: test glibc / arm64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-glibc-arm64-aws]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: test
+          arch: arm64
+          backend: aws
+          image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
+          node-version: ${{ matrix.node-version }}
+  test-macos-arm64-stub:
+    name: test macOS / arm64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-macos-arm64-stub]
+    runs-on: macos-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - os: macos-latest
-            arch: arm64
-          - os: macos-15-intel
-            arch: x64
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
-        backend: [stub, aws]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/ci-macos
         with:
-          path: ~/.cache/awskms-openssl/${{ env.AWSKMS_OPENSSL_FLOOR }}
-          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
-      - name: restore the OpenSSL floor used by the unload harness
-        run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version-file: .node-version
-      - name: record mandatory-capable Node
-        run: echo "AWSKMS_FLOOR_NODE=$(command -v node)" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
+          phase: test
+          arch: arm64
+          backend: stub
           node-version: ${{ matrix.node-version }}
-      - name: select OpenSSL CLI
-        run: |
-          prefix="$(brew --prefix openssl@3)"
-          echo "AWSKMS_OPENSSL=$prefix/bin/openssl" >> "$GITHUB_ENV"
-          echo "$prefix/bin" >> "$GITHUB_PATH"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+  test-macos-arm64-aws:
+    name: test macOS / arm64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-macos-arm64-aws]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
         with:
-          name: module-macos-${{ matrix.platform.arch }}-${{ matrix.backend }}
-          path: build
-      - name: restore the internal unload harness mode
-        run: |
-          test -s build/awskms_provider_unload
-          chmod 755 build/awskms_provider_unload
-          test -x build/awskms_provider_unload
-      - name: load and probe capability
-        run: |
-          set -euo pipefail
-          scripts/check-load.sh build "$AWSKMS_FLOOR_NODE" "$(command -v node)"
-          set +e
-          node -e 'const {createPrivateKey}=require("node:crypto");try{createPrivateKey({key:new URL("aws-kms:")});process.exit(0)}catch(e){process.exit(e.code==="ERR_INVALID_ARG_TYPE"?2:0)}'
-          rc=$?
-          set -e
-          if [ "$rc" -eq 2 ]; then
-            echo "Node $(node -p 'process.version') must support URL-backed OpenSSL STORE keys" >&2
-            exit 1
-          fi
-      - name: full provider and package suites
-        run: |
-          set -euo pipefail
-          module="$PWD/build/aws-kms.dylib"
-          AWSKMS_MODULE="$module" node \
-            --openssl-config="$PWD/build/awskms.relocatable.cnf" scripts/check.mjs
-          AWSKMS_UNLOAD_HARNESS="$PWD/build/awskms_provider_unload" \
-            node test/run.mjs 2>&1 | tee /tmp/suite.log
-          ! grep -q 'Skipping the end-to-end suites' /tmp/suite.log
-          grep -qE ' pass [1-9][0-9]*$' /tmp/suite.log
-          grep -F '✔ explicit provider unload leaves the host process usable' /tmp/suite.log
-          if [ '${{ matrix.backend }}' = aws ]; then scripts/npm-pack.sh build; fi
-
+          phase: test
+          arch: arm64
+          backend: aws
+          node-version: ${{ matrix.node-version }}
+  test-macos-x64-stub:
+    name: test macOS / x64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-macos-x64-stub]
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
+        with:
+          phase: test
+          arch: x64
+          backend: stub
+          node-version: ${{ matrix.node-version }}
+  test-macos-x64-aws:
+    name: test macOS / x64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-macos-x64-aws]
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
+        with:
+          phase: test
+          arch: x64
+          backend: aws
+          node-version: ${{ matrix.node-version }}
   required-capable:
     name: mandatory capable Node lane
-    needs: build-glibc
+    needs: build-glibc-x64-stub
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -399,103 +334,141 @@ jobs:
             ./scripts/ci-alma.sh sanitize stub x64 "$(cat .node-version)" \
               "$AWSKMS_OPENSSL_FLOOR"
 
-  build-musl-experimental:
-    name: experimental musl build / ${{ matrix.platform.arch }} / ${{ matrix.backend }}
+  build-musl-experimental-x64-stub:
+    name: experimental musl build / x64 / stub
     needs: gate
-    runs-on: ${{ matrix.platform.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - os: ubuntu-latest
-            arch: x64
-            image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
-          - os: ubuntu-24.04-arm
-            arch: arm64
-            image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
-        backend: [stub, aws]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/ci-musl
         with:
-          path: .ossl/${{ env.AWSKMS_OPENSSL_FLOOR }}
-          key: openssl-musl-${{ matrix.platform.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
+          phase: build
+          arch: x64
+          backend: stub
+          image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
 
-      - name: cache compiled AWS dependencies
-        if: matrix.backend == 'aws'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+  build-musl-experimental-x64-aws:
+    name: experimental musl build / x64 / aws
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
         with:
-          path: build/.ccache
-          key: ccache-v1-alpine3.22.5-${{ matrix.platform.arch }}-ossl${{ env.AWSKMS_OPENSSL_FLOOR }}-${{ github.sha }}
-          restore-keys: |
-            ccache-v1-alpine3.22.5-${{ matrix.platform.arch }}-ossl${{ env.AWSKMS_OPENSSL_FLOOR }}-
+          phase: build
+          arch: x64
+          backend: aws
+          image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
 
-      - name: cache AWS SDK source
-        if: matrix.backend == 'aws'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+  build-musl-experimental-arm64-stub:
+    name: experimental musl build / arm64 / stub
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
         with:
-          path: build/_deps/aws-sdk-cpp
-          key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake', 'scripts/patch-s2n-empty-kdf.sh', 'scripts/patch-s2n-openssl4.sh', 'scripts/patch-aws-sdk-keyspec.sh') }}
-      - name: build in pinned Alpine 3.22.5
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src \
-            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
-            '${{ matrix.platform.image }}' ./scripts/ci-alpine.sh build \
-              '${{ matrix.backend }}' '${{ matrix.platform.arch }}' \
-              '${{ env.AWSKMS_OPENSSL_FLOOR }}'
-      - name: upload experimental archive dry-run
-        if: matrix.backend == 'aws'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: awskms-linuxmusl-${{ matrix.platform.arch }}
-          path: awskms-*-linuxmusl-${{ matrix.platform.arch }}.tar.gz
-          if-no-files-found: error
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: module-musl-${{ matrix.platform.arch }}-${{ matrix.backend }}
-          retention-days: 1
-          path: |
-            build/aws-kms.so
-            build/awskms.cnf
-            build/awskms.relocatable.cnf
-            build/awskms-backend
-            build/awskms-dependencies
-            build/awskms-stub-mldsa
-            build/awskms_provider_unload
-          if-no-files-found: error
+          phase: build
+          arch: arm64
+          backend: stub
+          image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
 
-  test-musl-experimental:
-    name: experimental musl test / ${{ matrix.platform.arch }} / Node ${{ matrix.node-version }} / ${{ matrix.backend }}
-    needs: [node-versions, build-musl-experimental]
-    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental.result == 'success'
-    runs-on: ${{ matrix.platform.os }}
+  build-musl-experimental-arm64-aws:
+    name: experimental musl build / arm64 / aws
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: build
+          arch: arm64
+          backend: aws
+          image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
+
+  test-musl-experimental-x64-stub:
+    name: experimental musl test / x64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-musl-experimental-x64-stub]
+    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental-x64-stub.result == 'success'
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - os: ubuntu-latest
-            arch: x64
-            image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
-          - os: ubuntu-24.04-arm
-            arch: arm64
-            image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
-        backend: [stub, aws]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: ./.github/actions/ci-musl
         with:
-          name: module-musl-${{ matrix.platform.arch }}-${{ matrix.backend }}
-          path: build
-      - name: capability probe and tests in pinned Alpine 3.22.5
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src \
-            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
-            '${{ matrix.platform.image }}' ./scripts/ci-alpine.sh test \
-              '${{ matrix.backend }}' '${{ matrix.platform.arch }}' \
-              '${{ matrix.node-version }}'
+          phase: test
+          arch: x64
+          backend: stub
+          image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
+          node-version: ${{ matrix.node-version }}
+
+  test-musl-experimental-x64-aws:
+    name: experimental musl test / x64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-musl-experimental-x64-aws]
+    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental-x64-aws.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: test
+          arch: x64
+          backend: aws
+          image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
+          node-version: ${{ matrix.node-version }}
+
+  test-musl-experimental-arm64-stub:
+    name: experimental musl test / arm64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-musl-experimental-arm64-stub]
+    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental-arm64-stub.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: test
+          arch: arm64
+          backend: stub
+          image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
+          node-version: ${{ matrix.node-version }}
+
+  test-musl-experimental-arm64-aws:
+    name: experimental musl test / arm64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-musl-experimental-arm64-aws]
+    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental-arm64-aws.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: test
+          arch: arm64
+          backend: aws
+          image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
+          node-version: ${{ matrix.node-version }}
 
   openssl-headers:
     name: OpenSSL ${{ matrix.version }} headers
@@ -515,48 +488,37 @@ jobs:
       - run: scripts/build-openssl.sh '${{ matrix.version }}'
       - run: scripts/check-openssl-matrix.sh "$HOME/.cache/awskms-openssl/${{ matrix.version }}/include"
 
-  openssl-runtime:
-    name: OpenSSL ${{ matrix.version }} load and register / ${{ matrix.backend }}
-    needs: build-glibc
+  openssl-runtime-stub:
+    name: OpenSSL ${{ matrix.version }} load and register / stub
+    needs: build-glibc-x64-stub
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         version: ['3.0.21', '3.5.7', '4.0.1']
-        backend: [stub, aws]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/ci-openssl-runtime
         with:
-          path: ~/.cache/awskms-openssl/${{ matrix.version }}
-          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ matrix.version }}
-      - run: scripts/build-openssl.sh '${{ matrix.version }}'
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          version: ${{ matrix.version }}
+          backend: stub
+
+  openssl-runtime-aws:
+    name: OpenSSL ${{ matrix.version }} load and register / aws
+    needs: build-glibc-x64-aws
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.0.21', '3.5.7', '4.0.1']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-openssl-runtime
         with:
-          name: module-glibc-x64-${{ matrix.backend }}
-          path: build
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: startsWith(matrix.version, '3.0.')
-        with:
-          node-version: 20.20.2
-      - name: assert the JavaScript registration error on OpenSSL 3.0
-        if: startsWith(matrix.version, '3.0.')
-        run: node scripts/ci-check-register-node.mjs build/aws-kms.so
-      - name: load and exercise the registrar
-        run: |
-          set -euo pipefail
-          prefix="$HOME/.cache/awskms-openssl/${{ matrix.version }}"
-          export PATH="$prefix/bin:$PATH"
-          export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          output=$(openssl version)
-          got=$(sed -n 's/.*Library: OpenSSL \([0-9][0-9.]*\).*/\1/p' <<<"$output")
-          got=${got:-$(awk '{print $2}' <<<"$output")}
-          [ "$got" = '${{ matrix.version }}' ]
-          scripts/check-symbol-floor.sh build/aws-kms.so "$prefix"
-          scripts/check-load.sh build
-          if [[ '${{ matrix.version }}' == 3.0.* ]]; then expected=unsupported; else expected=supported; fi
-          python3 scripts/ci-check-register.py build/aws-kms.so "$prefix" "$expected"
+          version: ${{ matrix.version }}
+          backend: aws
 
   fips-provider-host:
     name: FIPS-enabled Node / stub retained families
@@ -684,7 +646,7 @@ jobs:
         github.event.action == 'labeled' &&
         github.event.label.name == 'real-kms'
       )
-    needs: build-glibc
+    needs: build-glibc-x64-aws
     runs-on: ubuntu-latest
     timeout-minutes: 45
     concurrency:

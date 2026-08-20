@@ -1,0 +1,214 @@
+name: macOS build or test phase
+description: Run one exact macOS architecture/backend CI phase.
+
+inputs:
+  phase:
+    description: build or test
+    required: true
+  arch:
+    description: Node and artifact architecture name
+    required: true
+  binary-arch:
+    description: Mach-O architecture name used by compatibility checks
+    required: false
+    default: ''
+  backend:
+    description: stub or aws
+    required: true
+  node-version:
+    description: Node version selector used by the test phase
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.phase == 'build'
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version-file: .node-version
+
+    - name: install compiler cache
+      if: inputs.phase == 'build' && inputs.backend == 'aws'
+      id: ccache
+      shell: bash
+      run: |
+        if ! command -v ccache >/dev/null; then brew install ccache; fi
+        version=$(ccache --version | awk 'NR == 1 { print $3 }')
+        [[ $version =~ ^4\.[0-9]+\.[0-9]+$ ]]
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: cache compiled AWS dependencies
+      if: inputs.phase == 'build' && inputs.backend == 'aws'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: build/.ccache
+        key: ccache-v1-macos-${{ inputs.arch }}-ccache${{ steps.ccache.outputs.version }}-osx${{ env.AWSKMS_MACOS_FLOOR }}-ossl${{ env.AWSKMS_OPENSSL_FLOOR }}-${{ github.sha }}
+        restore-keys: |
+          ccache-v1-macos-${{ inputs.arch }}-ccache${{ steps.ccache.outputs.version }}-osx${{ env.AWSKMS_MACOS_FLOOR }}-ossl${{ env.AWSKMS_OPENSSL_FLOOR }}-
+
+    - name: cache OpenSSL floor
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/awskms-openssl/${{ env.AWSKMS_OPENSSL_FLOOR }}
+        key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ env.AWSKMS_OPENSSL_FLOOR }}
+
+    - name: build OpenSSL floor
+      if: inputs.phase == 'build'
+      shell: bash
+      run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
+
+    - name: cache AWS SDK source
+      if: inputs.phase == 'build' && inputs.backend == 'aws'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: build/_deps/aws-sdk-cpp
+        key: aws-sdk-cpp-src-${{ runner.os }}-${{ hashFiles('cmake/FetchAwsSdkKms.cmake', 'scripts/patch-s2n-empty-kdf.sh', 'scripts/patch-s2n-openssl4.sh', 'scripts/patch-aws-sdk-keyspec.sh') }}
+
+    - name: configure, build, and verify
+      if: inputs.phase == 'build'
+      shell: bash
+      run: |
+        set -euo pipefail
+        prefix="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
+        set -- cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+          -DAWSKMS_BACKEND='${{ inputs.backend }}' \
+          -DOPENSSL_ROOT_DIR="$prefix" -DCMAKE_PREFIX_PATH="$prefix" \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET="$AWSKMS_MACOS_FLOOR"
+        if [[ '${{ inputs.backend }}' == aws ]]; then
+          export CCACHE_DIR="$PWD/build/.ccache"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_COMPRESS=1
+          export CCACHE_MAXSIZE=500M
+          mkdir -p "$CCACHE_DIR"
+          ccache --zero-stats
+          set -- "$@" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        fi
+        "$@"
+        cmake --build build --parallel
+        if [[ '${{ inputs.backend }}' == aws ]]; then ccache --show-stats; fi
+        ctest --test-dir build -R '^unit$' --no-tests=error --output-on-failure
+        scripts/check-symbol-floor.sh build/aws-kms.dylib "$prefix"
+        scripts/check-binary-compat.sh macos build/aws-kms.dylib \
+          '${{ inputs.binary-arch }}' "$AWSKMS_MACOS_FLOOR"
+        scripts/ci-policy-gate.sh artifact build/aws-kms.dylib
+
+    - name: stage and exercise archive dry-run
+      if: inputs.phase == 'build' && inputs.backend == 'aws'
+      id: archive
+      shell: bash
+      run: |
+        set -euo pipefail
+        target="darwin-${{ inputs.arch }}"
+        version=$(node -p "require('./npm/core/package.json').version")
+        directory="awskms-$version-$target"
+        archive="$directory.tar.gz"
+        scripts/package-archive.sh build "$target" .
+        scripts/ci-policy-gate.sh artifact build/aws-kms.dylib "$archive"
+        unpack="$RUNNER_TEMP/unpack"
+        mkdir -p "$unpack"
+        tar xzf "$archive" -C "$unpack"
+        AWSKMS_MODULE="$unpack/$directory/aws-kms.dylib" \
+          node --openssl-config="$unpack/$directory/awskms.cnf" \
+          "$unpack/$directory/check.mjs"
+        echo "target=$target" >> "$GITHUB_OUTPUT"
+        echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+    - name: upload archive dry-run
+      if: inputs.phase == 'build' && inputs.backend == 'aws'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: awskms-${{ steps.archive.outputs.target }}
+        path: ${{ steps.archive.outputs.archive }}
+        if-no-files-found: error
+
+    - name: upload module for tests
+      if: inputs.phase == 'build'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: module-macos-${{ inputs.arch }}-${{ inputs.backend }}
+        retention-days: 1
+        path: |
+          build/aws-kms.dylib
+          build/awskms.cnf
+          build/awskms.relocatable.cnf
+          build/awskms-backend
+          build/awskms-dependencies
+          build/awskms-stub-mldsa
+          build/awskms_provider_unload
+        if-no-files-found: error
+
+    - name: restore the OpenSSL floor used by the unload harness
+      if: inputs.phase == 'test'
+      shell: bash
+      run: scripts/build-openssl.sh "$AWSKMS_OPENSSL_FLOOR"
+
+    - if: inputs.phase == 'test'
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version-file: .node-version
+
+    - name: record mandatory-capable Node
+      if: inputs.phase == 'test'
+      shell: bash
+      run: echo "AWSKMS_FLOOR_NODE=$(command -v node)" >> "$GITHUB_ENV"
+
+    - if: inputs.phase == 'test'
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: select OpenSSL CLI
+      if: inputs.phase == 'test'
+      shell: bash
+      run: |
+        prefix="$(brew --prefix openssl@3)"
+        echo "AWSKMS_OPENSSL=$prefix/bin/openssl" >> "$GITHUB_ENV"
+        echo "$prefix/bin" >> "$GITHUB_PATH"
+
+    - name: download module for tests
+      if: inputs.phase == 'test'
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: module-macos-${{ inputs.arch }}-${{ inputs.backend }}
+        path: build
+
+    - name: restore the internal unload harness mode
+      if: inputs.phase == 'test'
+      shell: bash
+      run: |
+        test -s build/awskms_provider_unload
+        chmod 755 build/awskms_provider_unload
+        test -x build/awskms_provider_unload
+
+    - name: load and probe capability
+      if: inputs.phase == 'test'
+      shell: bash
+      run: |
+        set -euo pipefail
+        scripts/check-load.sh build "$AWSKMS_FLOOR_NODE" "$(command -v node)"
+        set +e
+        node -e 'const {createPrivateKey}=require("node:crypto");try{createPrivateKey({key:new URL("aws-kms:")});process.exit(0)}catch(e){process.exit(e.code==="ERR_INVALID_ARG_TYPE"?2:0)}'
+        rc=$?
+        set -e
+        if [ "$rc" -eq 2 ]; then
+          echo "Node $(node -p 'process.version') must support URL-backed OpenSSL STORE keys" >&2
+          exit 1
+        fi
+
+    - name: full provider and package suites
+      if: inputs.phase == 'test'
+      shell: bash
+      run: |
+        set -euo pipefail
+        module="$PWD/build/aws-kms.dylib"
+        AWSKMS_MODULE="$module" node \
+          --openssl-config="$PWD/build/awskms.relocatable.cnf" scripts/check.mjs
+        AWSKMS_UNLOAD_HARNESS="$PWD/build/awskms_provider_unload" \
+          node test/run.mjs 2>&1 | tee /tmp/suite.log
+        ! grep -q 'Skipping the end-to-end suites' /tmp/suite.log
+        grep -qE ' pass [1-9][0-9]*$' /tmp/suite.log
+        grep -F '✔ explicit provider unload leaves the host process usable' /tmp/suite.log
+        if [ '${{ inputs.backend }}' = aws ]; then scripts/npm-pack.sh build; fi
