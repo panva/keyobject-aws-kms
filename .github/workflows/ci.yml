@@ -774,10 +774,10 @@ jobs:
             'ML_DSA_44'; do
             grep -F "✔ $suite" "$RUNNER_TEMP/real-fips.log"
           done
-      - name: schedule test keys for deletion
+      - name: schedule this run's test keys for deletion
         if: always()
         timeout-minutes: 5
-        run: node scripts/real-kms-keys.mjs reap --window 7 --json
+        run: node scripts/real-kms-keys.mjs teardown --json
 
   lint:
     name: formatting and CI syntax
