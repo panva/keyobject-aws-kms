@@ -23,6 +23,36 @@ cp "$repo/scripts/bump-deps.sh" \
   "$repo/scripts/update-aws-sdk-components.mjs" "$bump_fixture/scripts/"
 cp "$repo/third_party/components.json" "$bump_fixture/third_party/"
 cp -R "$repo/third_party/licenses" "$bump_fixture/third_party/"
+# Keep this transition fixture independent of the repository's current pin.
+# In particular, every component that moved must look stale so its reviewed
+# legal-file inventory is exercised even after the real bump is merged.
+node - "$bump_fixture/third_party/components.json" <<'EOF'
+const fs = require('node:fs');
+
+const file = process.argv[2];
+const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+manifest.awsSdkTag = '1.11.855';
+for (const name of [
+  'aws-cpp-sdk-core',
+  'aws-cpp-sdk-kms',
+  'aws-sdk-cpp-third-party',
+]) {
+  manifest.components.find((component) => component.name === name).version =
+    '1.11.855';
+}
+const commits = new Map([
+  ['aws-crt-cpp', '72f84bc327462f405c4994228fffe1eeb16cca72'],
+  ['aws-c-cal', '9edd8eac2b21ca6a04535b91d60d361c2f1bb60f'],
+  ['aws-c-io', '54350963b64dfc6c4b0ea623b08aa252aae3d7d7'],
+  ['aws-c-s3', '1f29ef8871a27dc8b90325418780659bac534d71'],
+  ['aws-c-sdkutils', 'cb14fea362c82c995eebd34e2e96590ab4e0ed58'],
+  ['s2n-tls', 'f5f6c6c2ce2370de1aa3ade6899a7321d1127bb8'],
+]);
+for (const component of manifest.components) {
+  if (commits.has(component.name)) component.commit = commits.get(component.name);
+}
+fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+EOF
 cat > "$bump_fixture/cmake/FetchAwsSdkKms.cmake" <<'EOF'
 set(AWSKMS_AWS_SDK_TAG "1.11.855" CACHE STRING
   "fixture")
