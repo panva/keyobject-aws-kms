@@ -1,0 +1,20 @@
+# Vendored third-party sources, and where each came from.
+#
+# This file is the record that scripts/update-vendored.sh checks the tree
+# against, so a vendored dependency cannot quietly stop matching the release it
+# claims to be. Hand-editing a version here does not update anything -- it makes
+# `update-vendored.sh verify` fail until the files are actually refreshed, which
+# is the point.
+#
+# Columns, pipe-separated:
+#   name        directory under third_party/
+#   repo        GitHub owner/name
+#   tag         the release tag, verbatim (tag schemes differ between projects)
+#   assets      files published as RELEASE ASSETS, space-separated
+#   repofiles   files taken from the REPO TREE at that tag, space-separated
+#
+# ada publishes its amalgamation only as release assets -- upstream's
+# singleheader/ directory holds the generator, not the generated files -- while
+# the licence exists only in the tree. Hence the two columns.
+
+ada | ada-url/ada | v4.0.0 | ada.cpp ada.h ada_c.h | LICENSE-MIT

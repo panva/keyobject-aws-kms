@@ -1,0 +1,132 @@
+# Dependabot cannot cover the vendored amalgamation in third_party/ or tags
+# pinned in CMake, so this workflow provides both checks:
+#
+#   verify  proves the tree is the release the manifest claims it is
+#   bump    opens ONE pull request moving every pinned dependency to its latest
+name: vendored sources and dependency bumps
+
+on:
+  push:
+    # main only. Without this, `push` fires on EVERY branch -- including
+    # deps/bump, which this same workflow force-pushes on bump runs and whose diff
+    # touches third_party/ and update-vendored.sh, i.e. exactly the paths below.
+    # Every bump would have triggered a redundant verify on its own branch on top
+    # of the pull_request run. Branch work is already covered by `pull_request`.
+    branches: [main]
+    paths:
+      - 'third_party/**'
+      - 'src/**'
+      - 'scripts/update-vendored.sh'
+      - '.github/workflows/vendored.yml'
+  pull_request:
+    # ready_for_review, because the dependency bump PR is opened as a DRAFT. Without
+    # it, marking that PR ready never runs `verify` -- so the one PR this
+    # workflow itself creates was the one PR it never checked.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'third_party/**'
+      - 'src/**'
+      - 'scripts/update-vendored.sh'
+      - '.github/workflows/vendored.yml'
+  schedule:
+    # First day of each month, 06:00 UTC.
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # src/** is in the path filter because the API-surface half of `verify` reads
+  # src/, so a new ada_* call has to be checked against the vendored header even
+  # when third_party/ itself is untouched.
+  verify:
+    name: vendored sources match upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: every vendored file is byte-identical to its release
+        run: scripts/update-vendored.sh verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # The branch is derived state and is regenerated from main on every run.
+  bump:
+    name: bump pinned dependencies
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: vendored-dependency-bump
+      cancel-in-progress: false
+    permissions:
+      contents: write        # push the branch
+      pull-requests: write   # open it the first time
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: bump every pinned dependency
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # -B resets the branch to main even if it already exists locally.
+          git checkout -qB deps/bump
+          # Three outcomes: 0 = changed, 3 = current, anything else = error.
+          set +e; scripts/bump-deps.sh; rc=$?; set -e
+          case "$rc" in
+            0) echo "changed=true"  >> "$GITHUB_OUTPUT" ;;
+            3) echo "changed=false" >> "$GITHUB_OUTPUT"
+               echo "everything already at its latest release" ;;
+            *) echo "::error::bump-deps.sh failed with exit $rc"; exit "$rc" ;;
+          esac
+
+      # This workflow exclusively owns the regenerated branch.
+      - name: push the branch
+        if: steps.bump.outputs.changed == 'true'
+        run: git push --force origin deps/bump
+
+      # Created only when one is not already open -- an existing PR picks up the
+      # force-push on its own, which is the entire point of reusing the branch.
+      #
+      - name: open the pull request if one is not already open
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          scripts/dependency-pr-body.sh origin/main > /tmp/pr-body.md
+          existing_pr_number=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+            -f state=open \
+            -f head="$GITHUB_REPOSITORY_OWNER:deps/bump" \
+            -f base=main \
+            --jq '.[0].number // empty')
+          if [ -n "$existing_pr_number" ]; then
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/pulls/$existing_pr_number" \
+              -F body=@/tmp/pr-body.md --silent
+            echo "the force-push and description updated https://github.com/$GITHUB_REPOSITORY/pull/$existing_pr_number"
+            exit 0
+          fi
+          compare_url="https://github.com/$GITHUB_REPOSITORY/compare/main...deps/bump?expand=1"
+          if ! pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" \
+            --draft --base main --head deps/bump \
+            --title 'build: bump pinned dependencies' \
+            --body-file /tmp/pr-body.md); then
+            {
+              echo '### Dependency bump pull request was not created'
+              echo
+              echo "The generated branch is available at: $compare_url"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "$pr_url"

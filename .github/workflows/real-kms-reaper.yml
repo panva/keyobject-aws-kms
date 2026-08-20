@@ -1,0 +1,46 @@
+# The dead man's switch.
+#
+# Nothing in GitHub Actions covers a runner that dies outright, so the always()
+# teardown step in ci.yml's real-kms job is not a guarantee. This sweeps every key carrying
+# the test tag and schedules deletion for any not already pending.
+#
+# The harness never cancels deletion or reuses a key. If a sweep catches a key
+# that a test run still needs, that run is abandoned and a later setup creates a
+# fresh key. The alternative, keys billing indefinitely after a lost runner, is
+# worse.
+#
+# The accepted wart: a local run overlapping this job sees its keys scheduled and
+# starts failing, and is repaired by re-running setup.
+name: sweep abandoned KMS keys
+
+on:
+  schedule:
+    - cron: '43 3 * * *'
+  workflow_dispatch:
+
+# The same group as ci.yml's real-kms job prevents a sweep from racing a test.
+concurrency:
+  group: awskms-real-kms
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  reap:
+    name: schedule every stray test key for deletion
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWSKMS_ADMIN_ROLE_ARN }}
+          aws-region: ${{ vars.AWSKMS_TEST_REGION }}
+
+      # Orphans only: tagged keys that are not already pending deletion.
+      - name: find every tagged key and schedule the strays
+        run: node scripts/real-kms-keys.mjs reap --window 7 --json

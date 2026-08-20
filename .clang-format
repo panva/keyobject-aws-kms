@@ -1,0 +1,17 @@
+# The existing code was already almost exactly this: 2-space indent, K&R braces,
+# right-aligned pointers, 80 columns, /* */ comments throughout. 11 of the 19
+# files in src/ were byte-identical under this config before it was adopted, so
+# it records the house style rather than imposing a new one.
+#
+# ReflowComments: false is load-bearing, not a preference. This codebase carries
+# long explanatory block comments -- the reasoning behind each OpenSSL rule lives
+# next to the code that implements it -- and the Google default rewraps them,
+# tripling the reformat and destroying deliberate line breaks in prose.
+#
+# Do not raise ColumnLimit to 90 "to reduce churn". It makes things worse:
+# clang-format then joins lines the author deliberately wrapped.
+BasedOnStyle: Google
+DerivePointerAlignment: false
+PointerAlignment: Right
+ColumnLimit: 80
+ReflowComments: false

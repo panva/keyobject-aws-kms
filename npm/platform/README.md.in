@@ -1,0 +1,11 @@
+# @keyobject/aws-kms-@TARGET@
+
+> [!NOTE]
+> This is an internal platform package for
+> [`@keyobject/aws-kms`](https://www.npmjs.com/package/@keyobject/aws-kms). It is
+> installed automatically as an exact-version optional dependency. Do not
+> install it directly.
+
+This package contains the prebuilt OpenSSL provider for `@TARGET@`. See the
+[main project](https://github.com/panva/keyobject-aws-kms) for installation,
+usage, supported keys, and security guidance.

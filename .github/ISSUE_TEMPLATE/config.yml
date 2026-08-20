@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: ❓ Question
+    url: https://github.com/panva/keyobject-aws-kms/discussions/new?category=q-a
+    about: Have a usage question? Head to the Discussions Q&A category.
+  - name: 💡 Feature proposal
+    url: https://github.com/panva/keyobject-aws-kms/discussions/new?category=ideas
+    about: Have a feature proposal? Head to the Discussions Ideas category.
+  - name: 🔒 Security vulnerability
+    url: https://github.com/panva/keyobject-aws-kms/security/advisories/new
+    about: Report suspected vulnerabilities privately through a security advisory.
+  - name: Support the project
+    url: https://github.com/sponsors/panva
+    about: Relying on this project? Consider supporting its continued maintenance.

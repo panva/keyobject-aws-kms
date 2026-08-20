@@ -1,0 +1,96 @@
+name: 🐞 Bug report
+description: Report a reproducible problem with @keyobject/aws-kms
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Use Discussions for questions and feature proposals. Report suspected vulnerabilities through a [private security advisory](https://github.com/panva/keyobject-aws-kms/security/advisories/new).
+
+        Never include AWS credentials, session tokens, private configuration, production key identifiers, or production `aws-kms:` URIs. Replace them with safe test values.
+  - type: textarea
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Package version
+      description: What exact version of @keyobject/aws-kms do you use?
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Node.js version
+      description: Paste the output of `node --version`.
+      placeholder: e.g. v26.7.0
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: OpenSSL version
+      description: Paste the output of `node -p process.versions.openssl`.
+      placeholder: e.g. 3.5.7
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Platform
+      description: Select the installed native target.
+      options:
+        - darwin-arm64
+        - linux-arm64 (glibc)
+        - linux-x64 (glibc)
+        - linuxmusl-arm64
+        - linuxmusl-x64
+        - Other or source build
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Activation route
+      options:
+        - OpenSSL config
+        - In-process register preload
+        - Both
+        - Not applicable
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: FIPS mode
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: AWS region and KMS key spec
+      description: If applicable, provide a non-sensitive region and key spec such as `eu-central-1, RSA_2048`.
+  - type: textarea
+    attributes:
+      label: Code to reproduce
+      description: Provide a minimal, complete reproduction using test aliases and redacted configuration.
+      render: js
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Diagnostic output
+      description: Include relevant errors after removing credentials, account IDs, endpoints, and production key identifiers.
+      render: shell
+  - type: checkboxes
+    attributes:
+      label: Required
+      options:
+        - label: I searched Issues and Discussions for the same problem.
+          required: true
+        - label: I removed credentials, tokens, private configuration, and production identifiers.
+          required: true
+        - label: I agree to follow the project's [Code of Conduct](https://github.com/panva/keyobject-aws-kms/blob/main/CODE_OF_CONDUCT.md).
+          required: true

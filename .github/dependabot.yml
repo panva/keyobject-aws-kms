@@ -1,0 +1,16 @@
+# Actions in .github/workflows are pinned to full commit SHAs rather than tags,
+# because a tag is mutable and those jobs hold credentials that can create and
+# delete KMS keys. The cost of pinning is that a SHA goes stale silently -- there
+# is no version for a human to notice -- and this is what pays it. Dependabot
+# rewrites the SHA and the trailing `# vX.Y.Z` comment together, so the two cannot
+# drift apart.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns:
+          - "*"

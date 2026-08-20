@@ -1,0 +1,258 @@
+name: Release
+
+permissions: {}
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.repository == 'panva/keyobject-aws-kms'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      discussions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - name: Verify the remote tag and changelog
+        uses: panva/.github/.github/actions/npm-release@main
+        with:
+          operation: preflight
+          manifest_directory: npm/core
+          maintenance_branch: true
+          publish_jsr: false
+          github_release: true
+      - name: Verify all release metadata
+        run: node scripts/release-version.mjs check --tag "$GITHUB_REF_NAME"
+      - name: Require the Releases discussion category
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-lifecycle.mjs discussion-category
+
+  ci:
+    needs: preflight
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      real_kms: true
+      full_matrix: true
+
+  assemble:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - name: Find a payload from a prior run attempt
+        id: prior
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node scripts/release-lifecycle.mjs prior-artifact
+          --output "$GITHUB_OUTPUT"
+      - name: Download the prior release payload by artifact ID
+        if: steps.prior.outputs.found == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.prior.outputs.id }}
+          github-token: ${{ github.token }}
+          run-id: ${{ github.run_id }}
+          path: prior-release
+      - name: Download the five tested native archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: awskms-*
+          path: artifacts
+          merge-multiple: true
+      - name: Assemble the exact release payload
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./npm/core/package.json').version")
+          [[ "$GITHUB_REF_NAME" == "v$version" ]]
+          node scripts/assemble-release.mjs \
+            --artifacts artifacts --out dist --version "$version"
+          node scripts/release-lifecycle.mjs validate-payload --payload dist
+      - name: Lock release bytes across run attempts
+        if: steps.prior.outputs.found == 'true'
+        run: |
+          node scripts/release-lifecycle.mjs validate-payload \
+            --payload prior-release
+          node scripts/release-lifecycle.mjs compare-payloads \
+            --previous prior-release --current dist
+      - name: Attest all eleven tarballs
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.tgz
+      - name: Upload the exact release payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-payload
+          retention-days: 30
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/*.tgz
+            dist/SHA256SUMS
+
+  stage-npm:
+    name: Stage ${{ matrix.package }}
+    needs: assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - '@keyobject/aws-kms'
+          - '@keyobject/aws-kms-darwin-arm64'
+          - '@keyobject/aws-kms-linux-arm64'
+          - '@keyobject/aws-kms-linux-x64'
+          - '@keyobject/aws-kms-linuxmusl-arm64'
+          - '@keyobject/aws-kms-linuxmusl-x64'
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g --ignore-scripts npm@12.0.2
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-payload
+          path: ${{ runner.temp }}/release
+      - name: Select the exact package tarball
+        id: package
+        env:
+          PACKAGE_NAME: ${{ matrix.package }}
+        run: |
+          node scripts/release-lifecycle.mjs select-package \
+            --payload "$RUNNER_TEMP/release" --name "$PACKAGE_NAME" \
+            --output "$RUNNER_TEMP/npm-manifest"
+          echo "tarball=$(cat "$RUNNER_TEMP/npm-manifest/tarball")" >> "$GITHUB_OUTPUT"
+          echo "manifest=$RUNNER_TEMP/npm-manifest" >> "$GITHUB_OUTPUT"
+      - name: Stage the exact package artifact
+        id: stage
+        continue-on-error: true
+        uses: panva/.github/.github/actions/npm-release@main
+        with:
+          operation: stage
+          tarball: ${{ steps.package.outputs.tarball }}
+          manifest_directory: ${{ steps.package.outputs.manifest }}
+      - name: Explain pending-stage recovery
+        if: steps.stage.outcome == 'failure'
+        env:
+          PACKAGE_NAME: ${{ matrix.package }}
+        run: |
+          echo "::error::Staging $PACKAGE_NAME failed. If this version is already pending on npm, approve or reject that stage and then rerun the failed jobs."
+          exit 1
+
+  wait-npm:
+    needs: stage-npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-payload
+          path: ${{ runner.temp }}/release
+      - name: Recheck the remote release tag
+        uses: panva/.github/.github/actions/npm-release@main
+        with:
+          operation: verify-tag
+          manifest_directory: npm/core
+      - name: Summarize the required npm approval
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## Approve the six npm stages
+
+          Approve all six staged packages with 2FA in [npm package settings](https://www.npmjs.com/settings/keyobject/packages). Approving the five native satellites before `@keyobject/aws-kms` avoids a temporary dependency-availability window.
+          EOF
+      - name: Wait for all six exact npm artifacts
+        run: node scripts/release-lifecycle.mjs wait-npm --payload "$RUNNER_TEMP/release"
+
+  integrate:
+    needs: wait-npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Integrate the release commit
+        uses: panva/.github/.github/actions/npm-release@main
+        with:
+          operation: integrate
+          manifest_directory: npm/core
+          maintenance_branch: true
+
+  github-release:
+    needs: integrate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+      discussions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-payload
+          path: ${{ runner.temp }}/release
+      - name: Recheck the remote release tag
+        uses: panva/.github/.github/actions/npm-release@main
+        with:
+          operation: verify-tag
+          manifest_directory: npm/core
+      - name: Publish the exact discussion-backed GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release-lifecycle.mjs github-release --payload "$RUNNER_TEMP/release"

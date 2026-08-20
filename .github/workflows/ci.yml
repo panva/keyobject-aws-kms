@@ -1,0 +1,764 @@
+name: build and test
+
+on:
+  workflow_call:
+    inputs:
+      real_kms:
+        description: run against real AWS KMS
+        required: false
+        type: boolean
+        default: false
+      full_matrix:
+        description: use all real-KMS keys instead of the smoke subset
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
+  schedule:
+    # Weekly full CI also exercises the real AWS KMS integration suite.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      real_kms:
+        description: run against real AWS KMS
+        required: true
+        type: boolean
+        default: false
+      full_matrix:
+        description: use all real-KMS keys instead of the smoke subset
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  AWSKMS_OPENSSL_FLOOR: '3.0.21'
+  AWSKMS_MACOS_FLOOR: '13.5'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}${{ (github.event.action == 'labeled' && github.event.label.name == 'real-kms') && '-real-kms' || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name == 'real-kms') }}
+
+jobs:
+  gate:
+    name: not a draft
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo 'CI is enabled for this event'
+
+  node-versions:
+    name: resolve Node versions from 26 onward
+    needs: gate
+    uses: panva/.github/.github/workflows/node-versions.yml@e1fa8c4be19de2cf97b4a8ac99de8fd8d6bee3bd
+    with:
+      min: 26
+
+  build-glibc-x64-stub:
+    name: build glibc 2.28 / x64 / stub
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: build
+          arch: x64
+          backend: stub
+          image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
+  build-glibc-x64-aws:
+    name: build glibc 2.28 / x64 / aws
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: build
+          arch: x64
+          backend: aws
+          image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
+  build-glibc-arm64-stub:
+    name: build glibc 2.28 / arm64 / stub
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: build
+          arch: arm64
+          backend: stub
+          image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
+  build-glibc-arm64-aws:
+    name: build glibc 2.28 / arm64 / aws
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: build
+          arch: arm64
+          backend: aws
+          image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
+  build-macos-arm64-stub:
+    name: build macOS / arm64 / stub
+    needs: gate
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
+        with:
+          phase: build
+          backend: stub
+  build-macos-arm64-aws:
+    name: build macOS / arm64 / aws
+    needs: gate
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
+        with:
+          phase: build
+          backend: aws
+  test-glibc-x64-stub:
+    name: test glibc / x64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-glibc-x64-stub]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: test
+          arch: x64
+          backend: stub
+          image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
+          node-version: ${{ matrix.node-version }}
+  test-glibc-x64-aws:
+    name: test glibc / x64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-glibc-x64-aws]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: test
+          arch: x64
+          backend: aws
+          image: almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86
+          node-version: ${{ matrix.node-version }}
+  test-glibc-arm64-stub:
+    name: test glibc / arm64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-glibc-arm64-stub]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: test
+          arch: arm64
+          backend: stub
+          image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
+          node-version: ${{ matrix.node-version }}
+  test-glibc-arm64-aws:
+    name: test glibc / arm64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-glibc-arm64-aws]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-glibc
+        with:
+          phase: test
+          arch: arm64
+          backend: aws
+          image: almalinux@sha256:058da2bf381d460db9121940fbd035190ffbf28caec923cb9ba06c6e990da274
+          node-version: ${{ matrix.node-version }}
+  test-macos-arm64-stub:
+    name: test macOS / arm64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-macos-arm64-stub]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
+        with:
+          phase: test
+          backend: stub
+          node-version: ${{ matrix.node-version }}
+  test-macos-arm64-aws:
+    name: test macOS / arm64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-macos-arm64-aws]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-macos
+        with:
+          phase: test
+          backend: aws
+          node-version: ${{ matrix.node-version }}
+  required-capable:
+    name: mandatory capable Node lane
+    needs: build-glibc-x64-stub
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ossl-glibc/${{ env.AWSKMS_OPENSSL_FLOOR }}
+          key: openssl-alma8-x64-${{ env.AWSKMS_OPENSSL_FLOOR }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: module-glibc-x64-stub
+          path: build
+      - name: require the declared floor Node to run every suite
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
+            'almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86' \
+            ./scripts/ci-alma.sh test stub x64 "$(cat .node-version)" \
+              "$AWSKMS_OPENSSL_FLOOR"
+
+  sanitizers:
+    name: ASan and UBSan / mandatory-capable Node
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ossl-glibc/${{ env.AWSKMS_OPENSSL_FLOOR }}
+          key: openssl-alma8-x64-${{ env.AWSKMS_OPENSSL_FLOOR }}
+      - name: run the unit and provider suites under ASan and UBSan
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
+            'almalinux@sha256:f043b7ac550015e1ed0b5a55a420c61d178bff4357ab9663fe0fbdcf1e6e2d86' \
+            ./scripts/ci-alma.sh sanitize stub x64 "$(cat .node-version)" \
+              "$AWSKMS_OPENSSL_FLOOR"
+
+  build-musl-experimental-x64-stub:
+    name: experimental musl build / x64 / stub
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: build
+          arch: x64
+          backend: stub
+          image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
+
+  build-musl-experimental-x64-aws:
+    name: experimental musl build / x64 / aws
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: build
+          arch: x64
+          backend: aws
+          image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
+
+  build-musl-experimental-arm64-stub:
+    name: experimental musl build / arm64 / stub
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: build
+          arch: arm64
+          backend: stub
+          image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
+
+  build-musl-experimental-arm64-aws:
+    name: experimental musl build / arm64 / aws
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: build
+          arch: arm64
+          backend: aws
+          image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
+
+  test-musl-experimental-x64-stub:
+    name: experimental musl test / x64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-musl-experimental-x64-stub]
+    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental-x64-stub.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: test
+          arch: x64
+          backend: stub
+          image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
+          node-version: ${{ matrix.node-version }}
+
+  test-musl-experimental-x64-aws:
+    name: experimental musl test / x64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-musl-experimental-x64-aws]
+    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental-x64-aws.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: test
+          arch: x64
+          backend: aws
+          image: alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6
+          node-version: ${{ matrix.node-version }}
+
+  test-musl-experimental-arm64-stub:
+    name: experimental musl test / arm64 / Node ${{ matrix.node-version }} / stub
+    needs: [node-versions, build-musl-experimental-arm64-stub]
+    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental-arm64-stub.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: test
+          arch: arm64
+          backend: stub
+          image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
+          node-version: ${{ matrix.node-version }}
+
+  test-musl-experimental-arm64-aws:
+    name: experimental musl test / arm64 / Node ${{ matrix.node-version }} / aws
+    needs: [node-versions, build-musl-experimental-arm64-aws]
+    if: always() && needs.node-versions.result == 'success' && needs.build-musl-experimental-arm64-aws.result == 'success'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-musl
+        with:
+          phase: test
+          arch: arm64
+          backend: aws
+          image: alpine@sha256:2c9d26f410d032d5b1525aa8a873e238b05b90c4ae8618743d4311f0cc827e37
+          node-version: ${{ matrix.node-version }}
+
+  openssl-headers:
+    name: OpenSSL ${{ matrix.version }} headers
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.0.21', '3.5.7', '4.0.1']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/awskms-openssl/${{ matrix.version }}
+          key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ matrix.version }}
+      - run: scripts/build-openssl.sh '${{ matrix.version }}'
+      - run: scripts/check-openssl-matrix.sh "$HOME/.cache/awskms-openssl/${{ matrix.version }}/include"
+
+  openssl-runtime-stub:
+    name: OpenSSL ${{ matrix.version }} load and register / stub
+    needs: build-glibc-x64-stub
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.0.21', '3.5.7', '4.0.1']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-openssl-runtime
+        with:
+          version: ${{ matrix.version }}
+          backend: stub
+
+  openssl-runtime-aws:
+    name: OpenSSL ${{ matrix.version }} load and register / aws
+    needs: build-glibc-x64-aws
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['3.0.21', '3.5.7', '4.0.1']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/ci-openssl-runtime
+        with:
+          version: ${{ matrix.version }}
+          backend: aws
+
+  fips-provider-host:
+    name: FIPS-enabled Node / stub retained families
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - name: resolve Node's exact OpenSSL release
+        id: node-openssl
+        run: |
+          set -euo pipefail
+          version=$(node -p 'process.versions.openssl.match(/^\d+\.\d+\.\d+/)?.[0] ?? ""')
+          [[ $version =~ ^3\.[0-9]+\.[0-9]+$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/awskms-node-fips/${{ steps.node-openssl.outputs.version }}
+          key: node-fips-${{ runner.os }}-${{ runner.arch }}-${{ steps.node-openssl.outputs.version }}
+      - name: build Node's matching FIPS provider and the capable stub module
+        env:
+          AWSKMS_OPENSSL_FIPS: '1'
+          OPENSSL_VERSION: ${{ steps.node-openssl.outputs.version }}
+        run: |
+          set -euo pipefail
+          prefix="$HOME/.cache/awskms-node-fips/$OPENSSL_VERSION"
+          scripts/build-openssl.sh "$OPENSSL_VERSION" "$prefix"
+          cmake -S . -B build-fips-node -DCMAKE_BUILD_TYPE=Release \
+            -DAWSKMS_BACKEND=stub -DOPENSSL_ROOT_DIR="$prefix" \
+            -DCMAKE_PREFIX_PATH="$prefix"
+          cmake --build build-fips-node --parallel
+          ctest --test-dir build-fips-node -R '^unit$' --no-tests=error \
+            --output-on-failure
+          [[ $(<build-fips-node/awskms-stub-mldsa) != no ]]
+      - name: activate FIPS, default, and aws-kms in Node
+        id: node-fips
+        env:
+          OPENSSL_VERSION: ${{ steps.node-openssl.outputs.version }}
+        run: |
+          set -euo pipefail
+          prefix="$HOME/.cache/awskms-node-fips/$OPENSSL_VERSION"
+          module="$PWD/build-fips-node/aws-kms.so"
+          config="$RUNNER_TEMP/node-fips-awskms.cnf"
+          fips_module="$prefix/lib/ossl-modules/fips.so"
+          modules="$prefix/lib/ossl-modules"
+          fips_config="$RUNNER_TEMP/node-fipsmodule.cnf"
+          LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$prefix/bin/openssl" fipsinstall -module "$fips_module" \
+              -out "$fips_config" -provider_name fips
+          LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$prefix/bin/openssl" fipsinstall -verify -module "$fips_module" \
+              -in "$fips_config" -provider_name fips
+          cat > "$config" <<EOF
+          config_diagnostics = 1
+          openssl_conf = node_init
+          nodejs_conf = node_init
+          .include $fips_config
+          [node_init]
+          providers = providers
+          alg_section = algorithms
+          [providers]
+          fips = fips_sect
+          default = default_sect
+          aws-kms = aws_kms_sect
+          [default_sect]
+          activate = 1
+          [aws_kms_sect]
+          module = $module
+          activate = 1
+          [algorithms]
+          default_properties = fips=yes,?keyobject.aws_kms!=yes
+          EOF
+          # s2n initializes these legacy hashes with a local FIPS opt-out. The
+          # same fetches without that opt-out must remain globally prohibited.
+          for digest in md5 md5-sha1; do
+            printf test | OPENSSL_CONF="$config" OPENSSL_MODULES="$modules" \
+              LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              "$prefix/bin/openssl" dgst -propquery '-fips' "-$digest" \
+                >/dev/null
+            if printf test | OPENSSL_CONF="$config" OPENSSL_MODULES="$modules" \
+              LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              "$prefix/bin/openssl" dgst "-$digest" >/dev/null 2>&1; then
+              echo "error: $digest escaped the global FIPS policy" >&2
+              exit 1
+            fi
+          done
+          OPENSSL_MODULES="$modules" node --openssl-config="$config" -e '
+            const assert = require("node:assert/strict");
+            const crypto = require("node:crypto");
+            assert.equal(crypto.getFips(), 1);
+            assert.throws(
+              () => crypto.createPrivateKey({ key: new URL("aws-kms:") }),
+              { code: "ERR_OSSL_AWSKMS_INVALID_URI" },
+            );
+          '
+          echo "config=$config" >> "$GITHUB_OUTPUT"
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+      - name: sign and verify every retained family under FIPS
+        env:
+          AWSKMS_CNF: ${{ steps.node-fips.outputs.config }}
+          AWSKMS_MODULE: ${{ github.workspace }}/build-fips-node/aws-kms.so
+          AWSKMS_TEST_FIPS: '1'
+          OPENSSL_MODULES: ${{ steps.node-fips.outputs.modules }}
+        run: |
+          set -euo pipefail
+          node test/run.mjs test/sign.test.mjs 2>&1 | tee "$RUNNER_TEMP/fips-sign.log"
+          for suite in \
+            'RSA_2048 signing' \
+            'ECC_NIST_P256 signing' \
+            'Ed25519' \
+            'ML_DSA_44'; do
+            grep -F "✔ $suite" "$RUNNER_TEMP/fips-sign.log"
+          done
+
+  real-kms:
+    name: real AWS KMS
+    if: >-
+      github.event.schedule == '17 4 * * 1' ||
+      inputs.real_kms || (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 'real-kms'
+      )
+    needs: build-glibc-x64-aws
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: awskms-real-kms
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWSKMS_TEST_REGION }}
+      SUBSET: ${{ !inputs.full_matrix && '--smoke' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      - name: resolve Node's exact OpenSSL release
+        id: node-openssl
+        run: |
+          version=$(node -p 'process.versions.openssl.match(/^\d+\.\d+\.\d+/)?.[0] ?? ""')
+          [[ $version =~ ^3\.[0-9]+\.[0-9]+$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/awskms-node-fips/${{ steps.node-openssl.outputs.version }}
+          key: node-fips-${{ runner.os }}-${{ runner.arch }}-${{ steps.node-openssl.outputs.version }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: module-glibc-x64-aws
+          path: build
+      - run: scripts/check-load.sh build "$(command -v node)"
+      - name: activate the matching FIPS provider in Node
+        id: node-fips
+        env:
+          AWSKMS_OPENSSL_FIPS: '1'
+          OPENSSL_VERSION: ${{ steps.node-openssl.outputs.version }}
+        run: |
+          set -euo pipefail
+          prefix="$HOME/.cache/awskms-node-fips/$OPENSSL_VERSION"
+          scripts/build-openssl.sh "$OPENSSL_VERSION" "$prefix"
+          fips_module="$prefix/lib/ossl-modules/fips.so"
+          modules="$prefix/lib/ossl-modules"
+          fips_config="$RUNNER_TEMP/node-fipsmodule.cnf"
+          config="$RUNNER_TEMP/node-fips-awskms.cnf"
+          LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+            "$prefix/bin/openssl" fipsinstall -module "$fips_module" \
+              -out "$fips_config" -provider_name fips
+          cat > "$config" <<EOF
+          config_diagnostics = 1
+          openssl_conf = node_init
+          nodejs_conf = node_init
+          .include $fips_config
+          [node_init]
+          providers = providers
+          alg_section = algorithms
+          [providers]
+          fips = fips_sect
+          default = default_sect
+          aws-kms = aws_kms_sect
+          [default_sect]
+          activate = 1
+          [aws_kms_sect]
+          module = $PWD/build/aws-kms.so
+          activate = 1
+          [algorithms]
+          default_properties = fips=yes,?keyobject.aws_kms!=yes
+          EOF
+          # s2n initializes these legacy hashes with a local FIPS opt-out. The
+          # same fetches without that opt-out must remain globally prohibited.
+          for digest in md5 md5-sha1; do
+            printf test | OPENSSL_CONF="$config" OPENSSL_MODULES="$modules" \
+              LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              "$prefix/bin/openssl" dgst -propquery '-fips' "-$digest" \
+                >/dev/null
+            if printf test | OPENSSL_CONF="$config" OPENSSL_MODULES="$modules" \
+              LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+              "$prefix/bin/openssl" dgst "-$digest" >/dev/null 2>&1; then
+              echo "error: $digest escaped the global FIPS policy" >&2
+              exit 1
+            fi
+          done
+          OPENSSL_MODULES="$modules" node --openssl-config="$config" -e '
+            const assert = require("node:assert/strict");
+            const crypto = require("node:crypto");
+            assert.equal(crypto.getFips(), 1);
+            assert.throws(
+              () => crypto.createPrivateKey({ key: new URL("aws-kms:not-valid=1") }),
+              { code: "ERR_OSSL_AWSKMS_INVALID_URI" },
+            );
+          '
+          echo "config=$config" >> "$GITHUB_OUTPUT"
+          echo "modules=$modules" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWSKMS_ADMIN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: create test keys
+        run: |
+          subset=()
+          if [[ -n $SUBSET ]]; then subset+=("$SUBSET"); fi
+          node scripts/real-kms-keys.mjs setup "${subset[@]}" --roles test
+      - name: require every retained key family
+        run: node scripts/ci-check-real-manifest.mjs build/real-kms-keys.json
+      - name: run as the signer role
+        timeout-minutes: 20
+        env:
+          SIGNER_ROLE_ARN: ${{ vars.AWSKMS_SIGNER_ROLE_ARN }}
+          AWSKMS_CNF: ${{ steps.node-fips.outputs.config }}
+          AWSKMS_TEST_FIPS: '1'
+          OPENSSL_MODULES: ${{ steps.node-fips.outputs.modules }}
+        run: |
+          set -euo pipefail
+          credentials=$(aws sts assume-role --role-arn "$SIGNER_ROLE_ARN" \
+            --role-session-name "awskms-${GITHUB_RUN_ID}" --duration-seconds 3600 \
+            --query Credentials --output json)
+          export AWS_ACCESS_KEY_ID; AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$credentials")
+          export AWS_SECRET_ACCESS_KEY; AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$credentials")
+          export AWS_SESSION_TOKEN; AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$credentials")
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+          echo "::add-mask::$AWS_SESSION_TOKEN"
+          probe_key=$(jq -er \
+            '.keys["test-RSA_2048"].arn | select(type == "string" and length > 0)' \
+            build/real-kms-keys.json)
+          AWS_PAGER='' aws kms get-public-key \
+            --key-id "$probe_key" \
+            --region "$AWS_REGION" \
+            --endpoint-url "https://kms-fips.$AWS_REGION.amazonaws.com" \
+            --no-cli-pager \
+            --query KeyUsage --output text | grep -Fx SIGN_VERIFY
+          AWSKMS_AWS_LOG_ERRORS=1 AWSKMS_TEST_REAL=1 \
+            node test/run.mjs test/real-kms-focused.mjs \
+              2>&1 | tee "$RUNNER_TEMP/real-fips.log"
+          for suite in \
+            'RSA PKCS#1 v1.5 and RSA-PSS' \
+            'NIST ECDSA' \
+            'Ed25519' \
+            'ML-DSA with externally computed mu' \
+            'WebCrypto signs with every selected KeySpec' \
+            'a real KMS not-found response keeps its public error code' \
+            'real AWS KMS FIPS coverage'; do
+            grep -F "✔ $suite" "$RUNNER_TEMP/real-fips.log"
+          done
+      - name: schedule this run's test keys for deletion
+        if: always()
+        timeout-minutes: 5
+        run: node scripts/real-kms-keys.mjs teardown --json
+
+  lint:
+    name: formatting and CI syntax
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: clang-format
+        run: |
+          python3 -m venv /tmp/cf
+          /tmp/cf/bin/pip install -q clang-format==22.1.8
+          /tmp/cf/bin/clang-format --dry-run --Werror \
+            src/*.c src/*.h src/*.cc test/unit_*.c test/unit.h
+      - name: shell and Python syntax
+        run: |
+          bash -n scripts/*.sh
+          shellcheck -x -e SC2001,SC2016 scripts/*.sh
+          scripts/ci-self-test.sh
+          python3 -m py_compile scripts/ci-check-register.py
+      - name: stale files, private paths, and removed curves
+        run: scripts/ci-policy-gate.sh source

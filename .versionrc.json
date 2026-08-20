@@ -1,0 +1,31 @@
+{
+  "packageFiles": [
+    {
+      "filename": "npm/core/package.json",
+      "type": "json"
+    }
+  ],
+  "bumpFiles": [
+    {
+      "filename": "npm/core/package.json",
+      "type": "json"
+    }
+  ],
+  "commit-all": true,
+  "scripts": {
+    "prerelease": "node scripts/release-version.mjs prepare && node --test --test-reporter=spec scripts/test/release-version.test.mjs && scripts/ci-policy-gate.sh source && node scripts/check-licenses.mjs && scripts/ci-self-test.sh",
+    "postbump": "node scripts/release-version.mjs sync",
+    "postchangelog": "node scripts/release-version.mjs normalize-changelog"
+  },
+  "types": [
+    { "type": "feat", "section": "Features", "hidden": false },
+    { "type": "fix", "section": "Fixes", "hidden": false },
+    { "type": "chore", "hidden": true },
+    { "type": "docs", "section": "Documentation", "hidden": false },
+    { "type": "style", "hidden": true },
+    { "type": "refactor", "section": "Refactor", "hidden": false },
+    { "type": "revert", "section": "Reverts", "hidden": false },
+    { "type": "perf", "section": "Performance", "hidden": false },
+    { "type": "test", "hidden": true }
+  ]
+}
