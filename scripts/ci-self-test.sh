@@ -80,6 +80,10 @@ for source in "$repo/scripts/ci-alma.sh" "$repo/scripts/ci-alpine.sh"; do
   grep -Fq -- '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache' "$source" ||
     fail "$(basename "$source") does not cache C++ compilations"
 done
+grep -Fq 'epel-release-8-21.el8' "$repo/scripts/ci-alma.sh" ||
+  fail 'AlmaLinux must bootstrap EPEL from the release available in Extras'
+grep -Fq 'ccache-3.7.7-1.el8' "$repo/scripts/ci-alma.sh" ||
+  fail 'AlmaLinux must pin the compiler cache after enabling EPEL'
 [[ $(grep -Fc 'name: cache compiled AWS dependencies' \
   "$repo/.github/workflows/ci.yml") == 3 ]] ||
   fail 'CI must cache compiled AWS dependencies for glibc, macOS and musl'

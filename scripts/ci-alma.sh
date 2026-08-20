@@ -37,7 +37,7 @@ install_toolchain_prerequisites() {
     gcc-toolset-13-gcc-c++-13.3.1-2.2.el8_10 \
     gcc-toolset-13-libstdc++-devel-13.3.1-2.2.el8_10
   if [[ $phase == build && $backend == aws ]]; then
-    dnf -q -y install epel-release-8-22.el8
+    dnf -q -y install epel-release-8-21.el8
     dnf -q -y install ccache-3.7.7-1.el8
     [[ $(ccache --version | awk 'NR == 1 { print $3 }') == 3.7.7 ]]
   fi
