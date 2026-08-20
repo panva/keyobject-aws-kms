@@ -40,6 +40,39 @@ assert_dnf_package gcc-toolset-13-libasan-devel-13.3.1-2.2.el8_10
 assert_dnf_package gcc-toolset-13-libubsan-devel-13.3.1-2.2.el8_10
 grep -Fq 'gcc -print-file-name=libasan.so.8' "$repo/scripts/ci-alma.sh"
 grep -Fq 'gcc -print-file-name=libubsan.so.1' "$repo/scripts/ci-alma.sh"
+
+extract_function() {
+  local function_name=$1 source=$2
+
+  awk -v signature="$function_name() {" '
+    $0 == signature { inside = 1 }
+    inside { print }
+    inside && $0 == "}" { exit }
+  ' "$source"
+}
+
+alma_test_prerequisites=$(extract_function install_test_prerequisites \
+  "$repo/scripts/ci-alma.sh")
+[[ -n $alma_test_prerequisites ]] || fail 'missing AlmaLinux test prerequisites'
+if grep -Eq '(gcc|g\+\+|cmake|make|headers|-devel)' \
+  <<<"$alma_test_prerequisites"; then
+  fail 'AlmaLinux test phase installs a compiler, CMake, make, or headers'
+fi
+grep -Fq 'if [[ $test_version == "$floor_version" ]]' \
+  "$repo/scripts/ci-alma.sh" ||
+  fail 'AlmaLinux does not reuse an identical floor and matrix Node runtime'
+
+alpine_test_prerequisites=$(awk '
+  /^test\)$/ { occurrences++; if (occurrences == 1) inside = 1 }
+  inside && /^[[:space:]]*apk add / { packages = 1 }
+  packages { print }
+  packages && $0 !~ /\\$/ { exit }
+' "$repo/scripts/ci-alpine.sh")
+[[ -n $alpine_test_prerequisites ]] || fail 'missing Alpine test prerequisites'
+if grep -Eq '(^|[[:space:]])(build-base|gcc|g\+\+|cmake|make|linux-headers|[[:alnum:]+._-]+-dev)([[:space:]\\]|$)' \
+  <<<"$alpine_test_prerequisites"; then
+  fail 'Alpine test phase installs a compiler, CMake, make, or headers'
+fi
 if grep -Eq 'gcc -print-file-name=lib(asan|ubsan)\.so([")])' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'LD_PRELOAD must use sanitizer runtime DSOs, not linker scripts'

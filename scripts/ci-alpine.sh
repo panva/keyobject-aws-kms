@@ -41,16 +41,29 @@ ARG=${4:?usage: ci-alpine.sh build|test <backend> <arch> <arg>}
 say() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
 say "prerequisites"
-# No sudo, no apt, no toolchain in the base image. linux-headers and perl are not
-# optional in the build phase: the CRT needs the headers and OpenSSL's own build
-# needs perl. jq resolves a node spec in the test phase.
-apk add --no-cache build-base cmake git openssl-dev openssl linux-headers \
-  perl bash tar xz curl jq
+case "$PHASE" in
+build|ossl)
+  # linux-headers and perl are not optional here: the CRT needs the headers and
+  # OpenSSL's own build needs perl.
+  apk add --no-cache build-base cmake git openssl-dev openssl linux-headers \
+    perl bash tar xz curl jq
 
-# The workspace was checked out on the host by a different uid, and the aws
-# backend runs git to fetch the SDK. Without this every git command dies on
-# "detected dubious ownership in repository".
-git config --global --add safe.directory '*'
+  # The workspace was checked out on the host by a different uid, and the aws
+  # backend runs git to fetch the SDK. Without this every git command dies on
+  # "detected dubious ownership in repository".
+  git config --global --add safe.directory '*'
+  ;;
+test)
+  # This phase consumes a completed artifact. Keep only runtime and inspection
+  # tools; installing a compiler, CMake, or headers here is wasted setup time.
+  apk add --no-cache bash binutils curl jq libatomic libgcc libstdc++ openssl \
+    tar xz
+  ;;
+*)
+  echo "unknown phase '$PHASE' -- expected build, test or ossl" >&2
+  exit 2
+  ;;
+esac
 
 # Ownership is repaired on EVERY exit path, not only the happy one. The container
 # runs as root against a bind mount, so a failed run would otherwise leave a tree

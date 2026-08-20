@@ -21,27 +21,41 @@ grep -q '^AlmaLinux release 8\.10 ' /etc/almalinux-release || {
   exit 1
 }
 
-dnf -q -y install dnf-plugins-core
-dnf config-manager --set-enabled powertools >/dev/null
-dnf -q -y install \
-  ca-certificates curl diffutils file findutils git jq libatomic make openssl perl-core \
-  tar xz binutils \
-  gcc-toolset-13-gcc-13.3.1-2.2.el8_10 \
-  gcc-toolset-13-gcc-c++-13.3.1-2.2.el8_10 \
-  gcc-toolset-13-libstdc++-devel-13.3.1-2.2.el8_10
+install_test_prerequisites() {
+  dnf -q -y install \
+    binutils ca-certificates curl diffutils findutils jq libatomic libstdc++ \
+    openssl tar xz
+}
+
+install_toolchain_prerequisites() {
+  dnf -q -y install dnf-plugins-core
+  dnf config-manager --set-enabled powertools >/dev/null
+  dnf -q -y install \
+    ca-certificates curl diffutils file findutils git jq libatomic make openssl perl-core \
+    tar xz binutils \
+    gcc-toolset-13-gcc-13.3.1-2.2.el8_10 \
+    gcc-toolset-13-gcc-c++-13.3.1-2.2.el8_10 \
+    gcc-toolset-13-libstdc++-devel-13.3.1-2.2.el8_10
+}
+
+case "$phase" in
+  test)
+    install_test_prerequisites
+    ;;
+  build|sanitize)
+    install_toolchain_prerequisites
+    ;;
+  *)
+    echo "error: unknown phase '$phase'" >&2
+    exit 2
+    ;;
+esac
+
 if [[ $phase == sanitize ]]; then
   dnf -q -y install \
     gcc-toolset-13-libasan-devel-13.3.1-2.2.el8_10 \
     gcc-toolset-13-libubsan-devel-13.3.1-2.2.el8_10
 fi
-
-# shellcheck disable=SC1091
-source /opt/rh/gcc-toolset-13/enable
-[[ $(gcc -dumpfullversion) == 13.3.1 ]] || {
-  echo "error: expected GCC 13.3.1, found $(gcc -dumpfullversion)" >&2
-  exit 1
-}
-export CC=gcc CXX=g++
 
 cmake_version=3.31.8
 case "$arch" in
@@ -64,15 +78,25 @@ esac
   echo "error: expected $machine container, found $(uname -m)" >&2
   exit 1
 }
-cmake_archive="cmake-$cmake_version-linux-$machine.tar.gz"
-curl -fsSL --retry 3 -o "/tmp/$cmake_archive" \
-  "https://github.com/Kitware/CMake/releases/download/v$cmake_version/$cmake_archive"
-printf '%s  %s\n' "$cmake_sha" "/tmp/$cmake_archive" | sha256sum -c -
-rm -rf /opt/cmake
-mkdir -p /opt/cmake
-tar xzf "/tmp/$cmake_archive" -C /opt/cmake --strip-components=1
-export PATH="/opt/cmake/bin:$PATH"
-[[ $(cmake --version | awk 'NR == 1 { print $3 }') == "$cmake_version" ]]
+if [[ $phase != test ]]; then
+  # shellcheck disable=SC1091
+  source /opt/rh/gcc-toolset-13/enable
+  [[ $(gcc -dumpfullversion) == 13.3.1 ]] || {
+    echo "error: expected GCC 13.3.1, found $(gcc -dumpfullversion)" >&2
+    exit 1
+  }
+  export CC=gcc CXX=g++
+
+  cmake_archive="cmake-$cmake_version-linux-$machine.tar.gz"
+  curl -fsSL --retry 3 -o "/tmp/$cmake_archive" \
+    "https://github.com/Kitware/CMake/releases/download/v$cmake_version/$cmake_archive"
+  printf '%s  %s\n' "$cmake_sha" "/tmp/$cmake_archive" | sha256sum -c -
+  rm -rf /opt/cmake
+  mkdir -p /opt/cmake
+  tar xzf "/tmp/$cmake_archive" -C /opt/cmake --strip-components=1
+  export PATH="/opt/cmake/bin:$PATH"
+  [[ $(cmake --version | awk 'NR == 1 { print $3 }') == "$cmake_version" ]]
+fi
 
 glibc=$(ldd --version | awk 'NR == 1 { print $NF }')
 [[ $glibc == 2.28 ]] || {
@@ -80,14 +104,18 @@ glibc=$(ldd --version | awk 'NR == 1 { print $NF }')
   exit 1
 }
 
-git config --global --add safe.directory '*'
+if [[ $phase != test ]]; then
+  git config --global --add safe.directory '*'
+fi
 
-install_node() {
-  local spec=$1 destination=$2 version archive checksum
-  curl -fsSL --retry 3 -o /tmp/node-index.json https://nodejs.org/dist/index.json
+resolve_node_version() {
+  local spec=$1 version
   case "$spec" in
     [0-9]*.[0-9]*.[0-9]*) version=$spec ;;
     *)
+      if [[ ! -s /tmp/node-index.json ]]; then
+        curl -fsSL --retry 3 -o /tmp/node-index.json https://nodejs.org/dist/index.json
+      fi
       version=$(jq -r --arg spec "$spec" '
         (if $spec == "current" or $spec == "latest" or $spec == "node" then .
          elif $spec == "lts/*" then [ .[] | select(.lts) ]
@@ -99,6 +127,11 @@ install_node() {
       ;;
   esac
   [[ -n $version ]] || { echo "error: no Node release for '$spec'" >&2; exit 1; }
+  printf '%s\n' "$version"
+}
+
+install_node_version() {
+  local version=$1 destination=$2 archive checksum
   archive="node-v$version-linux-$node_arch.tar.xz"
   curl -fsSL --retry 3 -o "/tmp/$archive" "https://nodejs.org/dist/v$version/$archive"
   checksum=$(curl -fsSL --retry 3 "https://nodejs.org/dist/v$version/SHASUMS256.txt" \
@@ -109,6 +142,12 @@ install_node() {
   mkdir -p "$destination"
   tar xJf "/tmp/$archive" -C "$destination" --strip-components=1
   "$destination/bin/node" -p "process.version + ' ' + process.arch"
+}
+
+install_node() {
+  local spec=$1 destination=$2 version
+  version=$(resolve_node_version "$spec")
+  install_node_version "$version" "$destination"
 }
 
 case "$phase" in
@@ -159,15 +198,29 @@ case "$phase" in
     }
     chmod 755 build/awskms_provider_unload
     export AWSKMS_UNLOAD_HARNESS="$PWD/build/awskms_provider_unload"
-    install_node "$(cat .node-version)" /tmp/node-floor
-    install_node "$argument" /tmp/node-test
-    export PATH="/tmp/node-test/bin:$openssl_prefix/bin:$PATH"
+    floor_version=$(resolve_node_version "$(cat .node-version)")
+    test_version=$(resolve_node_version "$argument")
+    install_node_version "$floor_version" /tmp/node-floor
+    floor_node=/tmp/node-floor/bin/node
+    if [[ $test_version == "$floor_version" ]]; then
+      echo "Node v$test_version is both the floor and requested runtime; reusing one install"
+      test_node=$floor_node
+    else
+      install_node_version "$test_version" /tmp/node-test
+      test_node=/tmp/node-test/bin/node
+    fi
+    node_bin_dir=$(dirname "$test_node")
+    export PATH="$node_bin_dir:$openssl_prefix/bin:$PATH"
     export LD_LIBRARY_PATH="$openssl_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-    scripts/check-load.sh build /tmp/node-floor/bin/node /tmp/node-test/bin/node
+    if [[ $test_node == "$floor_node" ]]; then
+      scripts/check-load.sh build "$floor_node"
+    else
+      scripts/check-load.sh build "$floor_node" "$test_node"
+    fi
 
     set +e
-    /tmp/node-test/bin/node -e '
+    "$test_node" -e '
       const { createPrivateKey } = require("node:crypto");
       try { createPrivateKey({ key: new URL("aws-kms:") }); process.exit(0); }
       catch (error) { process.exit(error.code === "ERR_INVALID_ARG_TYPE" ? 2 : 0); }
@@ -175,16 +228,16 @@ case "$phase" in
     capability=$?
     set -e
     if (( capability == 2 )); then
-      version=$(/tmp/node-test/bin/node -p 'process.version')
+      version=$("$test_node" -p 'process.version')
       echo "error: Node $version must support URL-backed OpenSSL STORE keys" >&2
       exit 1
     fi
 
     AWSKMS_MODULE="$PWD/build/aws-kms.so" \
-      /tmp/node-test/bin/node --openssl-config="$PWD/build/awskms.relocatable.cnf" \
+      "$test_node" --openssl-config="$PWD/build/awskms.relocatable.cnf" \
       scripts/check.mjs
 
-    /tmp/node-test/bin/node test/run.mjs 2>&1 | tee /tmp/suite.log
+    "$test_node" test/run.mjs 2>&1 | tee /tmp/suite.log
     ! grep -q 'Skipping the end-to-end suites' /tmp/suite.log
     grep -qE ' pass [1-9][0-9]*$' /tmp/suite.log
     grep -F '✔ explicit provider unload leaves the host process usable' /tmp/suite.log
