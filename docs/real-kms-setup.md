@@ -235,8 +235,11 @@ provider binary is not independently CMVP certified; see the
 
 - If setup is interrupted, run `status` with the same manifest, then run
   `teardown`. To inventory tagged leftovers outside the manifest, use the AWS
-  Resource Groups Tagging API before considering `reap`; `reap --dry-run` only
-  prints the calls it would make and does not enumerate live resources.
+  Resource Groups Tagging API before considering `reap`. Cleanup `--dry-run`
+  performs the real caller-identity, discovery, account/region, alias, and
+  ownership-tag checks. It prints, but does not execute, only `DeleteAlias` and
+  `ScheduleKeyDeletion` calls. It therefore requires working read credentials
+  and fails closed on foreign or untagged resources just like live cleanup.
 - `reap` uses a valid implicit `build/real-kms-keys.json` alongside its
   ownership-tag sweep. It warns and continues with tags alone when that default
   is stale or unreadable. A path supplied with `--manifest` is always validated

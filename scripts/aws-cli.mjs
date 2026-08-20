@@ -11,7 +11,10 @@
  *
  * The CLI is preinstalled on GitHub Actions ubuntu and macos runners.
  */
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export class AwsCliError extends Error {
   constructor({ argv, code, stderr, errorCode }) {
@@ -78,6 +81,49 @@ export function aws(args, { region, profile, dryRun = false, quiet = false } = {
  * callers can treat "not found" as a state instead of a failure. */
 export function awsTry(args, opts = {}) {
   const r = aws(args, { ...opts, quiet: true });
+  if (r && r.error) return { ok: false, error: r.error };
+  return { ok: true, value: r };
+}
+
+/* Async counterparts used when independent CLI calls can safely overlap. */
+export async function awsAsync(
+  args,
+  { region, profile, dryRun = false, quiet = false } = {},
+) {
+  const argv = [...args, '--output', 'json'];
+  if (region) argv.push('--region', region);
+  if (profile) argv.push('--profile', profile);
+
+  if (dryRun) {
+    console.log(`  [dry-run] aws ${argv.join(' ')}`);
+    return null;
+  }
+
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync('aws', argv, {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    }));
+  } catch (error) {
+    /* ENOENT and other launch failures have a string code and are not AWS
+     * command failures. Preserve them rather than disguising them as one. */
+    if (!Number.isInteger(error.code)) throw error;
+    const err = new AwsCliError({
+      argv,
+      code: error.code,
+      stderr: error.stderr ?? '',
+      errorCode: errorCodeOf(error.stderr ?? ''),
+    });
+    if (!quiet) throw err;
+    return { error: err };
+  }
+  const out = (stdout ?? '').trim();
+  return out === '' ? null : JSON.parse(out);
+}
+
+export async function awsTryAsync(args, opts = {}) {
+  const r = await awsAsync(args, { ...opts, quiet: true });
   if (r && r.error) return { ok: false, error: r.error };
   return { ok: true, value: r };
 }

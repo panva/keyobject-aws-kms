@@ -23,7 +23,8 @@
  *   --window <days>    integer 7..30 (default 7)
  *   --concurrency <n>  positive integer (default 4)
  *   --sweep            include every owned tagged key in cleanup
- *   --dry-run          print mutating calls without making them
+ *   --dry-run          print mutations without making them; cleanup still
+ *                      performs live read-only discovery and verification
  *   --json             print a machine-readable result
  */
 import { randomBytes } from 'node:crypto';
@@ -33,6 +34,7 @@ import { dirname, resolve } from 'node:path';
 import {
   aws,
   awsTry,
+  awsTryAsync,
   configuredRegion,
   hasAwsCli,
   pollUntil,
@@ -51,6 +53,9 @@ const OWNER_VALUE = '1';
 const ALIAS_PREFIX = 'alias/awskms-';
 
 const log = (...args) => console.log(...args);
+const readOnlyOptions = (opts) => opts.dryRun
+  ? { ...opts, dryRun: false }
+  : opts;
 
 function parseArgs(argv) {
   const cmd = argv[0];
@@ -171,6 +176,16 @@ function tagArguments(tags) {
 
 function describeAlias(alias, opts) {
   const result = awsTry(['kms', 'describe-key', '--key-id', alias], opts);
+  if (result.ok) return result.value?.KeyMetadata ?? null;
+  if (result.error.errorCode === 'NotFoundException') return null;
+  throw result.error;
+}
+
+async function describeAliasAsync(alias, opts) {
+  const result = await awsTryAsync(
+    ['kms', 'describe-key', '--key-id', alias],
+    readOnlyOptions(opts),
+  );
   if (result.ok) return result.value?.KeyMetadata ?? null;
   if (result.error.errorCode === 'NotFoundException') return null;
   throw result.error;
@@ -349,21 +364,25 @@ async function setup(opts) {
 }
 
 function sweepTagged(opts) {
+  const readOpts = readOnlyOptions(opts);
   const result = awsTry([
     'resourcegroupstaggingapi', 'get-resources',
     '--tag-filters', `Key=${TAGS.owner},Values=${OWNER_VALUE}`,
     '--resource-type-filters', 'kms:key',
-  ], opts);
+  ], readOpts);
   if (result.ok) {
     return (result.value?.ResourceTagMappingList ?? [])
       .map((mapping) => mapping.ResourceARN);
   }
 
-  const listed = awsTry(['kms', 'list-keys'], opts);
+  const listed = awsTry(['kms', 'list-keys'], readOpts);
   if (!listed.ok) throw listed.error;
   const found = [];
   for (const { KeyId, KeyArn } of listed.value?.Keys ?? []) {
-    const tags = awsTry(['kms', 'list-resource-tags', '--key-id', KeyId], opts);
+    const tags = awsTry(
+      ['kms', 'list-resource-tags', '--key-id', KeyId],
+      readOpts,
+    );
     if (!tags.ok) continue;
     if ((tags.value?.Tags ?? []).some(
       (tag) => tag.TagKey === TAGS.owner && tag.TagValue === OWNER_VALUE,
@@ -372,13 +391,11 @@ function sweepTagged(opts) {
   return found;
 }
 
-function verifyOwnedTarget(target, opts) {
-  if (opts.dryRun) {
-    log(`  [dry-run] verify ownership tags for ${target.id}`);
-    return { exists: true, metadata: null };
-  }
-
-  const described = awsTry(['kms', 'describe-key', '--key-id', target.id], opts);
+async function verifyOwnedTarget(target, opts) {
+  const described = await awsTryAsync(
+    ['kms', 'describe-key', '--key-id', target.id],
+    readOnlyOptions(opts),
+  );
   if (!described.ok && described.error.errorCode === 'NotFoundException') {
     return { exists: false, metadata: null };
   }
@@ -389,7 +406,10 @@ function verifyOwnedTarget(target, opts) {
     throw new Error(`${target.why} resolves outside the selected account/region`);
   }
 
-  const listed = awsTry(['kms', 'list-resource-tags', '--key-id', metadata.KeyId], opts);
+  const listed = await awsTryAsync(
+    ['kms', 'list-resource-tags', '--key-id', metadata.KeyId],
+    readOnlyOptions(opts),
+  );
   if (!listed.ok) throw listed.error;
   const actual = Object.fromEntries(
     (listed.value?.Tags ?? []).map((tag) => [tag.TagKey, tag.TagValue]),
@@ -410,7 +430,7 @@ function verifyOwnedTarget(target, opts) {
 }
 
 async function scheduleDeletion(keyId, opts, what) {
-  const result = awsTry([
+  const result = await awsTryAsync([
     'kms', 'schedule-key-deletion',
     '--key-id', keyId,
     '--pending-window-in-days', String(opts.window),
@@ -477,59 +497,71 @@ async function teardown(opts) {
   }
 
   /* Preflight every target and alias before the first destructive request. */
-  const active = [];
-  const aliases = [];
-  for (const target of targets) {
-    const verified = verifyOwnedTarget(target, opts);
-    if (!verified.exists) continue;
-    active.push(target);
+  const preflight = await mapLimit(targets, opts.concurrency, async (target) => {
+    const verified = await verifyOwnedTarget(target, opts);
+    if (!verified.exists) return null;
 
+    let alias = null;
     if (target.alias) {
-      const aliasTarget = describeAlias(target.alias, opts);
-      if (aliasTarget == null) continue;
-      if (!opts.dryRun && aliasTarget.Arn !== verified.metadata.Arn) {
+      const aliasTarget = await describeAliasAsync(target.alias, opts);
+      if (aliasTarget == null) return { target, alias };
+      if (aliasTarget.Arn !== verified.metadata.Arn) {
         throw new Error(
           `refusing to delete ${target.alias}: it targets ${aliasTarget.Arn}, not ${verified.metadata.Arn}`,
         );
       }
-      aliases.push({ alias: target.alias, target });
+      alias = target.alias;
     }
-  }
+    return { target, alias };
+  });
 
-  let aliasFailures = 0;
-  for (const { alias, target } of aliases) {
+  const activeEntries = preflight.filter(Boolean);
+  const active = activeEntries.map(({ target }) => target);
+  const aliases = activeEntries.filter(({ alias }) => alias != null);
+
+  const aliasResults = await mapLimit(aliases, opts.concurrency, async ({ alias, target }) => {
     /* Recheck immediately before the destructive call.  The all-target
      * preflight above guarantees a bad manifest causes zero mutations; this
      * second check also closes the ordinary tag/alias TOCTOU window. */
-    const verified = verifyOwnedTarget(target, opts);
-    const aliasTarget = describeAlias(alias, opts);
-    if (!verified.exists || aliasTarget == null) continue;
-    if (!opts.dryRun && aliasTarget.Arn !== verified.metadata.Arn) {
-      throw new Error(
-        `refusing to delete ${alias}: it now targets ${aliasTarget.Arn}, not ${verified.metadata.Arn}`,
-      );
-    }
-    const result = awsTry(['kms', 'delete-alias', '--alias-name', alias], opts);
-    if (!result.ok && result.error.errorCode !== 'NotFoundException') {
-      /* The target has passed both ownership checks. An operational alias error
-       * must remain visible, but must not keep an owned key enabled and billable.
-       * KMS removes remaining aliases when the scheduled key is finally deleted. */
-      aliasFailures++;
-      console.error(`  alias:${alias}: ${result.error.message}`);
-    }
-  }
-
-  let keyFailures = 0;
-  await mapLimit(active, opts.concurrency, async (target) => {
     try {
-      const verified = verifyOwnedTarget(target, opts);
-      if (!verified.exists) return;
-      await scheduleDeletion(target.id, opts, target.why);
+      const verified = await verifyOwnedTarget(target, opts);
+      const aliasTarget = await describeAliasAsync(alias, opts);
+      if (!verified.exists || aliasTarget == null) return 0;
+      if (aliasTarget.Arn !== verified.metadata.Arn) {
+        throw new Error(
+          `refusing to delete ${alias}: it now targets ${aliasTarget.Arn}, not ${verified.metadata.Arn}`,
+        );
+      }
+      const result = await awsTryAsync(
+        ['kms', 'delete-alias', '--alias-name', alias],
+        opts,
+      );
+      if (!result.ok && result.error.errorCode !== 'NotFoundException') {
+        throw result.error;
+      }
+      return 0;
     } catch (error) {
-      keyFailures++;
-      console.error(`  ${target.why}: ${error.message}`);
+      /* The preflight passed before this phase began. A per-alias operational or
+       * TOCTOU failure must remain visible, but must not keep other verified keys
+       * enabled and billable. Every key is independently rechecked below. */
+      console.error(`  alias:${alias}: ${error.message}`);
+      return 1;
     }
   });
+  const aliasFailures = aliasResults.reduce((total, failed) => total + failed, 0);
+
+  const keyResults = await mapLimit(active, opts.concurrency, async (target) => {
+    try {
+      const verified = await verifyOwnedTarget(target, opts);
+      if (!verified.exists) return 0;
+      await scheduleDeletion(target.id, opts, target.why);
+      return 0;
+    } catch (error) {
+      console.error(`  ${target.why}: ${error.message}`);
+      return 1;
+    }
+  });
+  const keyFailures = keyResults.reduce((total, failed) => total + failed, 0);
   if (aliasFailures !== 0 || keyFailures !== 0) {
     throw new Error(
       `cleanup completed with ${aliasFailures} alias deletion failure(s) and ` +
@@ -546,7 +578,7 @@ function status(opts) {
     return [];
   }
   const rows = Object.values(manifest.keys).map((key) => {
-    const metadata = describeAlias(key.alias, opts);
+    const metadata = describeAlias(key.alias, readOnlyOptions(opts));
     return {
       alias: key.alias,
       state: metadata?.KeyState ?? 'absent',
@@ -584,10 +616,13 @@ async function main() {
     throw new Error('--profile is required outside CI; ambient credentials need AWSKMS_ALLOW_AMBIENT_CREDENTIALS=1');
   }
 
-  if (opts.dryRun) {
+  if (opts.dryRun && cmd === 'setup') {
     opts.account = '000000000000';
   } else {
-    const identity = aws(['sts', 'get-caller-identity'], opts);
+    const identity = aws(
+      ['sts', 'get-caller-identity'],
+      readOnlyOptions(opts),
+    );
     opts.account = identity.Account;
     log(`account ${identity.Account} as ${identity.Arn}`);
   }
