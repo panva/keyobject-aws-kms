@@ -33,7 +33,15 @@ runs:
       id: ccache
       shell: bash
       run: |
-        if ! command -v ccache >/dev/null; then brew install ccache; fi
+        if ! command -v ccache >/dev/null; then
+          # Runner images carry this unused third-party tap. Homebrew 6 emits a
+          # tap-trust annotation for it during installs; remove it rather than
+          # granting trust to unrelated executable package definitions.
+          if brew tap | grep -Fxq aws/tap; then
+            brew untap aws/tap
+          fi
+          brew install ccache
+        fi
         version=$(ccache --version | awk 'NR == 1 { print $3 }')
         [[ $version =~ ^4\.[0-9]+\.[0-9]+$ ]]
         echo "version=$version" >> "$GITHUB_OUTPUT"

@@ -105,6 +105,11 @@ grep -Fq "    - if: inputs.phase == 'build' && inputs.backend == 'aws'" \
   fail 'macOS must install the build-time Node runtime only for AWS packaging'
 
 macos_action="$repo/.github/actions/ci-macos/action.yml"
+grep -Fq 'brew untap aws/tap' "$macos_action" ||
+  fail 'macOS must remove the unused untrusted AWS tap before installing ccache'
+if grep -Eq 'brew trust aws/tap|HOMEBREW_NO_REQUIRE_TAP_TRUST' "$macos_action"; then
+  fail 'macOS must not trust the AWS tap or disable Homebrew tap enforcement'
+fi
 grep -Fq "key: openssl-v2-\${{ runner.os }}-\${{ runner.arch }}-\${{ env.AWSKMS_OPENSSL_FLOOR }}-osx\${{ env.AWSKMS_MACOS_FLOOR }}-\${{ hashFiles('scripts/build-openssl.sh') }}" \
   "$macos_action" ||
   fail 'macOS OpenSSL cache identity must include the deployment floor and builder'
