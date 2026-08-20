@@ -101,10 +101,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -n "$(gh pr list --repo "$GITHUB_REPOSITORY" \
-            --head "$GITHUB_REPOSITORY_OWNER:deps/bump" --base main \
-            --state open --json number --jq '.[].number')" ]; then
-            echo "an open PR already tracks deps/bump; the force-push updated it"
+          existing_pr=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+            -f state=open \
+            -f head="$GITHUB_REPOSITORY_OWNER:deps/bump" \
+            -f base=main \
+            --jq '.[0].html_url // empty')
+          if [ -n "$existing_pr" ]; then
+            echo "an open PR already tracks deps/bump; the force-push updated $existing_pr"
             exit 0
           fi
           # Keep the quoted heredoc indented so it remains inside the YAML block.
@@ -126,16 +129,11 @@ jobs:
           # The heredoc body is indented for YAML's sake, so strip that indent
           # before it becomes the PR description.
           sed -i 's/^          //' /tmp/pr-body.md
-          # Use the documented REST endpoint directly. GITHUB_TOKEN is an
-          # installation token and this job grants it pull-requests: write.
           compare_url="https://github.com/$GITHUB_REPOSITORY/compare/main...deps/bump?expand=1"
-          if ! pr_url=$(gh api --method POST "repos/$GITHUB_REPOSITORY/pulls" \
-            -F base=main \
-            -F head=deps/bump \
-            -F title='build: bump pinned dependencies' \
-            -F body=@/tmp/pr-body.md \
-            -F draft=true \
-            --jq .html_url); then
+          if ! pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" \
+            --draft --base main --head deps/bump \
+            --title 'build: bump pinned dependencies' \
+            --body-file /tmp/pr-body.md); then
             {
               echo '### Dependency bump pull request was not created'
               echo
