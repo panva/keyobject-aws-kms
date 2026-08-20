@@ -47,6 +47,27 @@ async function clearRequestLog() {
   assert.equal(response.status, 200);
 }
 
+test(
+  'an ARN and alias for one fixture resolve to the same HTTP stub key',
+  { skip: needsHttpStub },
+  () => {
+    const arn = createPrivateKey({
+      key: new URL(
+        'aws-kms:key-id=arn:aws:kms:us-east-1:000000000000:key/RSA_4096',
+      ),
+    });
+    const alias = createPrivateKey({
+      key: new URL('aws-kms:key-id=alias/test-RSA_4096'),
+    });
+    const other = createPrivateKey({
+      key: new URL('aws-kms:key-id=alias/other-RSA_4096'),
+    });
+
+    assert.equal(arn.equals(alias), true);
+    assert.equal(arn.equals(other), false);
+  },
+);
+
 const CLIENT_WORKER = String.raw`
   const { parentPort, workerData } = require('node:worker_threads');
   const {
