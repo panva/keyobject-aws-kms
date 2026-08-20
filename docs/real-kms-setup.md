@@ -17,6 +17,8 @@ Use a dedicated test account when possible. The harness:
 - records exact key and alias identities in `build/real-kms-keys.json`;
 - validates account, region, aliases, ARNs, and ownership tags before the first
   destructive cleanup call;
+- authorizes alias creation and deletion against both the alias and its owned
+  target key, as required by KMS;
 - schedules deletion rather than cancelling and reusing keys;
 - keeps provisioning credentials separate from the signer credentials used by
   the provider tests.
@@ -241,6 +243,9 @@ provider binary is not independently CMVP certified; see the
   strictly.
 - If a key is reported as foreign or its ownership tags do not match, stop and
   investigate. The harness intentionally refuses partial cleanup.
+- Once all ownership checks pass, an operational alias-deletion failure is
+  reported but does not prevent the owned key from being scheduled. KMS removes
+  any remaining aliases when it ultimately deletes the key.
 - `PendingDeletion` is the expected final key state. An enabled test key still
   needs teardown.
 - `ERR_OSSL_AWSKMS_THROTTLED` means SDK retries were exhausted. Keep real tests

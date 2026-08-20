@@ -50,6 +50,9 @@ fi
 if grep -Fq 'cancel-key-deletion' "$repo/scripts/real-kms-keys.mjs"; then
   fail 'the test harness must not recover or reuse keys pending deletion'
 fi
+grep -Fq "Sid: 'DeleteAliasesOnlyForOwnedKeys'" \
+  "$repo/scripts/real-kms-bootstrap.mjs" ||
+  fail 'DeleteAlias must be authorised against owned target keys'
 if grep -Fq 'archive="node-v$version-linux-$machine.tar.xz"' \
   "$repo/scripts/ci-alma.sh"; then
   fail 'Node archive names must not use uname architecture names'

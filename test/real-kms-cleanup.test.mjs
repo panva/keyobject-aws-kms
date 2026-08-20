@@ -152,6 +152,11 @@ if (has('get-caller-identity')) {
   output({ ResourceTagMappingList: [
     { ResourceARN: process.env.FAKE_AWS_ARN },
   ] });
+} else if (has('delete-alias') && process.env.FAKE_AWS_SCENARIO === 'delete-alias-denied') {
+  process.stderr.write(
+    'An error occurred (AccessDeniedException) when calling the DeleteAlias operation: denied\\n',
+  );
+  process.exit(254);
 } else {
   output({});
 }
@@ -294,6 +299,16 @@ describe('real KMS cleanup safety', () => {
   test('deletes the verified alias before scheduling the verified key', () => {
     const result = run(['teardown']);
     assert.equal(result.status, 0, result.stderr);
+    const mutations = destructiveCalls();
+    assert.equal(mutations.length, 2);
+    assert.ok(mutations[0].includes('delete-alias'));
+    assert.ok(mutations[1].includes('schedule-key-deletion'));
+  });
+
+  test('schedules a verified owned key even when alias deletion is denied', () => {
+    const result = run(['teardown'], { scenario: 'delete-alias-denied' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /alias deletion failure\(s\)/);
     const mutations = destructiveCalls();
     assert.equal(mutations.length, 2);
     assert.ok(mutations[0].includes('delete-alias'));

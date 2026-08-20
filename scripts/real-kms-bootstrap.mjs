@@ -169,6 +169,16 @@ const adminPolicy = (acct) => ({
       Resource: `arn:aws:kms:*:${acct}:alias/awskms-*`,
     },
     {
+      /* DeleteAlias, like CreateAlias, is authorised against both resources. */
+      Sid: 'DeleteAliasesOnlyForOwnedKeys',
+      Effect: 'Allow',
+      Action: 'kms:DeleteAlias',
+      Resource: `arn:aws:kms:*:${acct}:key/*`,
+      Condition: {
+        StringEquals: { 'aws:ResourceTag/awskms-provider-test': '1' },
+      },
+    },
+    {
       Sid: 'ReadTestKeyLifecycle',
       Effect: 'Allow',
       Action: ['kms:DescribeKey'],

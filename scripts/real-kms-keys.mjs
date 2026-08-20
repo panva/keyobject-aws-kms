@@ -496,6 +496,7 @@ async function teardown(opts) {
     }
   }
 
+  let aliasFailures = 0;
   for (const { alias, target } of aliases) {
     /* Recheck immediately before the destructive call.  The all-target
      * preflight above guarantees a bad manifest causes zero mutations; this
@@ -510,23 +511,30 @@ async function teardown(opts) {
     }
     const result = awsTry(['kms', 'delete-alias', '--alias-name', alias], opts);
     if (!result.ok && result.error.errorCode !== 'NotFoundException') {
-      throw result.error;
+      /* The target has passed both ownership checks. An operational alias error
+       * must remain visible, but must not keep an owned key enabled and billable.
+       * KMS removes remaining aliases when the scheduled key is finally deleted. */
+      aliasFailures++;
+      console.error(`  alias:${alias}: ${result.error.message}`);
     }
   }
 
-  let failures = 0;
+  let keyFailures = 0;
   await mapLimit(active, opts.concurrency, async (target) => {
     try {
       const verified = verifyOwnedTarget(target, opts);
       if (!verified.exists) return;
       await scheduleDeletion(target.id, opts, target.why);
     } catch (error) {
-      failures++;
+      keyFailures++;
       console.error(`  ${target.why}: ${error.message}`);
     }
   });
-  if (failures !== 0) {
-    throw new Error(`${failures} owned key(s) could not be scheduled for deletion`);
+  if (aliasFailures !== 0 || keyFailures !== 0) {
+    throw new Error(
+      `cleanup completed with ${aliasFailures} alias deletion failure(s) and ` +
+      `${keyFailures} owned key scheduling failure(s)`,
+    );
   }
   return { scheduled: active.length };
 }
