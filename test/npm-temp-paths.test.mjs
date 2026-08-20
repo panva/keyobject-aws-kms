@@ -28,6 +28,9 @@ import {
 
 const fixturePath = new URL(import.meta.url);
 const childMarker = '--npm-temp-child';
+const operationTimeout = 30_000;
+const activeChildren = new Set();
+const activeWorkers = new Set();
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -174,7 +177,9 @@ async function childMain() {
   const [, , , operation, coreEntry] = process.argv;
   try {
     let value;
-    if (operation === 'wait-snapshot') {
+    if (operation === 'hang') {
+      await new Promise(() => setInterval(() => {}, 60_000));
+    } else if (operation === 'wait-snapshot') {
       await new Promise((resolveInput) => process.stdin.once('data', resolveInput));
       value = await snapshotRuntime(coreEntry);
     } else if (operation === 'snapshot') {
@@ -205,6 +210,12 @@ async function childMain() {
 
 async function workerMain() {
   try {
+    if (workerData.operation === 'hang') {
+      await new Promise(() => setInterval(() => {}, 60_000));
+    } else if (workerData.operation === 'report-then-hang') {
+      parentPort.postMessage({ ok: true, value: 'reported-before-hang' });
+      await new Promise(() => setInterval(() => {}, 60_000));
+    }
     process.env.TMPDIR = workerData.tmpDirectory;
     const value = await snapshotRuntime(workerData.coreEntry);
     parentPort.postMessage({ ok: true, value });
@@ -215,7 +226,13 @@ async function workerMain() {
   }
 }
 
-function runChild(operation, coreEntry, tmpDirectory, prepare) {
+function runChild(
+  operation,
+  coreEntry,
+  tmpDirectory,
+  prepare,
+  timeout = operationTimeout,
+) {
   return new Promise((resolveChild, rejectChild) => {
     const needsPreparation = prepare !== undefined;
     const child = spawn(
@@ -226,29 +243,56 @@ function runChild(operation, coreEntry, tmpDirectory, prepare) {
         stdio: [needsPreparation ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       },
     );
+    activeChildren.add(child);
     let stdout = '';
     let stderr = '';
     let preparationError;
+    let settled = false;
+    let timedOut = false;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeout);
+    timer.unref();
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('error', rejectChild);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      activeChildren.delete(child);
+      settle(rejectChild, error);
+    });
     if (needsPreparation) {
       child.on('spawn', async () => {
         try {
           await prepare(child.pid);
-          child.stdin.end('\n');
+          if (!timedOut && !settled) child.stdin.end('\n');
         } catch (error) {
           preparationError = error;
-          child.kill();
+          child.kill('SIGKILL');
         }
       });
     }
     child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      activeChildren.delete(child);
+      if (timedOut) {
+        settle(rejectChild, new Error(
+          `child operation ${JSON.stringify(operation)} timed out after ${timeout}ms ` +
+          `(pid=${child.pid}, code=${code}, signal=${signal})\n` +
+          `stdout:\n${stdout.trim()}\nstderr:\n${stderr.trim()}`,
+        ));
+        return;
+      }
       if (preparationError !== undefined) {
-        rejectChild(preparationError);
+        settle(rejectChild, preparationError);
         return;
       }
       const output = stdout.trim();
@@ -256,7 +300,7 @@ function runChild(operation, coreEntry, tmpDirectory, prepare) {
       try {
         result = JSON.parse(output);
       } catch (error) {
-        rejectChild(new Error(
+        settle(rejectChild, new Error(
           `child produced invalid JSON (code=${code}, signal=${signal}): ${output}\n${stderr}`,
           { cause: error },
         ));
@@ -264,33 +308,73 @@ function runChild(operation, coreEntry, tmpDirectory, prepare) {
       }
       if (code !== 0 || !result.ok) {
         const reportedError = JSON.stringify(result.error);
-        rejectChild(new Error(
+        settle(rejectChild, new Error(
           `child failed (code=${code}, signal=${signal}): ${reportedError}\n${stderr}`,
         ));
         return;
       }
-      resolveChild(result.value);
+      settle(resolveChild, result.value);
     });
   });
 }
 
-function runWorker(coreEntry, tmpDirectory) {
+function runWorker(
+  coreEntry,
+  tmpDirectory,
+  { operation = 'snapshot', timeout = operationTimeout } = {},
+) {
   return new Promise((resolveWorker, rejectWorker) => {
     const worker = new Worker(fixturePath, {
-      workerData: { awskmsTempWorker: true, coreEntry, tmpDirectory },
+      workerData: { awskmsTempWorker: true, coreEntry, tmpDirectory, operation },
     });
+    activeWorkers.add(worker);
+    const workerId = worker.threadId;
     let result;
-    worker.on('message', (message) => { result = message; });
-    worker.on('error', rejectWorker);
-    worker.on('exit', (code) => {
-      if (code !== 0) {
-        rejectWorker(new Error(`worker exited with code ${code}`));
-      } else if (result === undefined) {
-        rejectWorker(new Error('worker exited without reporting a result'));
-      } else if (!result.ok) {
-        rejectWorker(new Error(`worker failed: ${JSON.stringify(result.error)}`));
+    let settled = false;
+    const settle = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      activeWorkers.delete(worker);
+      callback(value);
+    };
+    const settleResult = () => {
+      if (!result.ok) {
+        settle(rejectWorker, new Error(`worker failed: ${JSON.stringify(result.error)}`));
       } else {
-        resolveWorker(result.value);
+        settle(resolveWorker, result.value);
+      }
+    };
+    const timer = setTimeout(() => {
+      settle(rejectWorker, new Error(
+        `worker ${workerId} operation ${JSON.stringify(operation)} timed out after ${timeout}ms`,
+      ));
+      worker.unref();
+      void worker.terminate().catch(() => {});
+    }, timeout);
+    timer.unref();
+
+    worker.once('message', (message) => {
+      result = message;
+      /* The result proves the Worker completed the operation under test. Do not
+       * depend on incidental loader handles closing by themselves afterward. */
+      settleResult();
+      worker.unref();
+      void worker.terminate().catch(() => {});
+    });
+    worker.once('error', (error) => {
+      settle(rejectWorker, error);
+      worker.unref();
+      void worker.terminate().catch(() => {});
+    });
+    worker.on('exit', (code) => {
+      activeWorkers.delete(worker);
+      if (settled) return;
+      if (result !== undefined) return;
+      if (code !== 0) {
+        settle(rejectWorker, new Error(`worker ${workerId} exited with code ${code}`));
+      } else {
+        settle(rejectWorker, new Error(`worker ${workerId} exited without reporting a result`));
       }
     });
   });
@@ -410,11 +494,51 @@ if (!isMainThread && workerData?.awskmsTempWorker) {
     mkdirSync(resolve(testRoot), { recursive: true, mode: 0o700 });
     chmodSync(resolve(testRoot), 0o700);
     const runRoot = mkdtempSync(join(resolve(testRoot), 'run-'));
-    t.after(() => rmSync(runRoot, { recursive: true, force: true }));
+    t.after(async () => {
+      const childClosures = [...activeChildren].map((child) => new Promise((resolveClose) => {
+        child.once('close', resolveClose);
+        child.unref();
+        if (!child.kill('SIGKILL')) resolveClose();
+      }));
+      for (const worker of activeWorkers) {
+        activeWorkers.delete(worker);
+        worker.unref();
+        void worker.terminate().catch(() => {});
+      }
+      if (childClosures.length !== 0) {
+        let cleanupTimer;
+        await Promise.race([
+          Promise.allSettled(childClosures),
+          new Promise((resolveTimeout) => {
+            cleanupTimer = setTimeout(resolveTimeout, 1_000);
+          }),
+        ]);
+        clearTimeout(cleanupTimer);
+      }
+      rmSync(runRoot, { recursive: true, force: true });
+    });
     const sharedTmp = join(runRoot, 'shared-tmp');
     mkdirSync(sharedTmp, { mode: 0o700 });
     chmodSync(sharedTmp, 0o1777);
     process.env.TMPDIR = sharedTmp;
+
+    await t.test('terminates stuck child processes and Workers with context', async () => {
+      await assert.rejects(
+        runChild('hang', coreEntry, sharedTmp, undefined, 100),
+        /child operation "hang" timed out after 100ms/,
+      );
+      await assert.rejects(
+        runWorker(coreEntry, sharedTmp, { operation: 'hang', timeout: 100 }),
+        /worker [0-9]+ operation "hang" timed out after 100ms/,
+      );
+      assert.equal(
+        await runWorker(coreEntry, sharedTmp, {
+          operation: 'report-then-hang',
+          timeout: 100,
+        }),
+        'reported-before-hang',
+      );
+    });
 
     await t.test('ignores precreated PID paths, symlinks, files, and sentinels', async () => {
       let entries;
