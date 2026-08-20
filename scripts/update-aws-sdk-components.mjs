@@ -184,6 +184,36 @@ function assertSameKeys(actual, expected, label) {
   }
 }
 
+function renderManifest(manifest) {
+  const expectedKeys = ['awsSdkTag', 'components', 'schemaVersion'];
+  const actualKeys = Object.keys(manifest).sort();
+  if (!sameMembers(actualKeys, expectedKeys)) {
+    fail('third_party/components.json has unsupported top-level fields');
+  }
+
+  const components = manifest.components.map((component, index) => {
+    const fields = Object.entries(component)
+      .map(
+        ([name, value]) =>
+          `${JSON.stringify(name)}: ${JSON.stringify(value)}`,
+      )
+      .join(', ');
+    const comma = index + 1 === manifest.components.length ? '' : ',';
+    return `    { ${fields} }${comma}`;
+  });
+
+  return [
+    '{',
+    `  "schemaVersion": ${JSON.stringify(manifest.schemaVersion)},`,
+    `  "awsSdkTag": ${JSON.stringify(manifest.awsSdkTag)},`,
+    '  "components": [',
+    ...components,
+    '  ]',
+    '}',
+    '',
+  ].join('\n');
+}
+
 function parseGitmodules(payload) {
   if (payload.encoding !== 'base64' || typeof payload.content !== 'string') {
     fail('aws-crt-cpp .gitmodules response is not base64 content');
@@ -281,7 +311,13 @@ try {
   }
   const components = new Map();
   for (const component of manifest.components) {
-    if (typeof component.name !== 'string' || components.has(component.name)) {
+    if (
+      component == null ||
+      Array.isArray(component) ||
+      typeof component !== 'object' ||
+      typeof component.name !== 'string' ||
+      components.has(component.name)
+    ) {
       fail('third_party/components.json has a missing or duplicate component name');
     }
     components.set(component.name, component);
@@ -324,7 +360,7 @@ try {
 
   const temporaryPath = `${manifestPath}.${process.pid}.tmp`;
   try {
-    writeFileSync(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+    writeFileSync(temporaryPath, renderManifest(manifest), {
       flag: 'wx',
       mode: statSync(manifestPath).mode & 0o777,
     });

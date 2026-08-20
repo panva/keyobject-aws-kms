@@ -236,6 +236,21 @@ EOF
 )
 [[ $component_summary == "$expected_component_summary" ]] ||
   fail 'AWS SDK bump did not refresh the exact component graph'
+
+component_manifest="$bump_fixture/third_party/components.json"
+[[ $(wc -l < "$component_manifest") -eq 25 ]] ||
+  fail 'AWS component updater expanded the compact manifest layout'
+[[ $(grep -c '^    { ' "$component_manifest") -eq 19 ]] ||
+  fail 'AWS component updater did not keep one component per line'
+if grep -Eq '^      "[^"]+":' "$component_manifest"; then
+  fail 'AWS component updater reformatted component properties across lines'
+fi
+manifest_numstat=$(
+  git -C "$bump_fixture" show --format= --numstat HEAD~1 -- \
+    third_party/components.json
+)
+[[ $manifest_numstat == $'10\t10\tthird_party/components.json' ]] ||
+  fail 'AWS component bump contains unrelated manifest formatting churn'
 node "$bump_fixture/scripts/check-licenses.mjs" >/dev/null
 
 bump_body=$("$bump_fixture/scripts/dependency-pr-body.sh" main)
