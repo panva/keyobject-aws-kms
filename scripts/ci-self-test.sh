@@ -11,6 +11,85 @@ fail() {
   exit 1
 }
 
+# Dependency updates must carry both versions in the commit subjects and in the
+# generated PR body. Exercise both the pinned and vendored paths without the
+# network so the weekly workflow cannot quietly regress either format.
+bump_fixture="$temporary/dependency-bump"
+mkdir -p "$bump_fixture"/{cmake,scripts,third_party} \
+  "$bump_fixture/fake-bin"
+cp "$repo/scripts/bump-deps.sh" \
+  "$repo/scripts/dependency-pr-body.sh" "$bump_fixture/scripts/"
+cat > "$bump_fixture/cmake/FetchAwsSdkKms.cmake" <<'EOF'
+set(AWSKMS_AWS_SDK_TAG "1.11.855")
+EOF
+cat > "$bump_fixture/third_party/vendored.manifest" <<'EOF'
+ada | ada-url/ada | v3.2.7 | ada.cpp ada.h ada_c.h | LICENSE-MIT
+EOF
+cat > "$bump_fixture/scripts/update-vendored.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# -eq 3 && $1 == update && $2 == ada && $3 == v3.2.8 ]]
+sed -i.bak 's/v3\.2\.7/v3.2.8/' third_party/vendored.manifest
+rm -f third_party/vendored.manifest.bak
+EOF
+cat > "$bump_fixture/fake-bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ ${1:-} == api && -n ${2:-} ]] || exit 64
+case $2 in
+  'repos/aws/aws-sdk-cpp/tags?per_page=100') printf '1.11.874\n' ;;
+  'repos/ada-url/ada/releases/latest') printf 'v3.2.8\n' ;;
+  *) echo "unexpected gh request: $*" >&2; exit 64 ;;
+esac
+EOF
+chmod 755 "$bump_fixture/scripts/"*.sh "$bump_fixture/fake-bin/gh"
+git -C "$bump_fixture" init -q
+git -C "$bump_fixture" config user.name fixture
+git -C "$bump_fixture" config user.email fixture@example.com
+git -C "$bump_fixture" config commit.gpgsign false
+git -C "$bump_fixture" add cmake scripts third_party
+git -C "$bump_fixture" commit -qm base
+git -C "$bump_fixture" branch -M main
+git -C "$bump_fixture" checkout -qb deps/bump
+PATH="$bump_fixture/fake-bin:$PATH" \
+  "$bump_fixture/scripts/bump-deps.sh" >/dev/null
+
+bump_subjects=$(git -C "$bump_fixture" log --reverse --format='%s' main..HEAD)
+expected_bump_subjects=$'build: bump aws-sdk-cpp from 1.11.855 to 1.11.874\nbuild: bump ada from v3.2.7 to v3.2.8'
+[[ $bump_subjects == "$expected_bump_subjects" ]] || {
+  diff -u <(printf '%s\n' "$expected_bump_subjects") \
+    <(printf '%s\n' "$bump_subjects") >&2 || true
+  fail 'dependency bump subjects do not include exact old and new versions'
+}
+
+bump_body=$("$bump_fixture/scripts/dependency-pr-body.sh" main)
+expected_bump_body=$(cat <<'EOF'
+Opened weekly by `.github/workflows/vendored.yml`.
+
+## Changes
+
+- Bump `aws-sdk-cpp` from `1.11.855` to `1.11.874`.
+- Bump `ada` from `v3.2.7` to `v3.2.8`.
+
+This branch is **reset from `main`** every week and force-pushed, so it is always exactly `main` plus one commit per dependency that moved. It is derived state: do not commit onto it, and expect history to be rewritten.
+
+**Mark this ready for review to run CI.** It is opened as a draft, and this repository gates CI behind a non-draft pull request. The `ready_for_review` action is an explicit CI trigger.
+
+An `aws-sdk-cpp` bump moves vendored s2n. The build checks whether the local s2n compatibility patch is still applicable or can be removed.
+EOF
+)
+[[ $bump_body == "$expected_bump_body" ]] || {
+  diff -u <(printf '%s\n' "$expected_bump_body") \
+    <(printf '%s\n' "$bump_body") >&2 || true
+  fail 'dependency PR body does not contain the exact unwrapped transitions'
+}
+
+vendored_workflow="$repo/.github/workflows/vendored.yml"
+grep -Fq 'scripts/dependency-pr-body.sh origin/main > /tmp/pr-body.md' \
+  "$vendored_workflow" || fail 'vendored workflow does not render the tested PR body'
+grep -Fq '"repos/$GITHUB_REPOSITORY/pulls/$existing_pr_number"' \
+  "$vendored_workflow" || fail 'vendored workflow does not refresh an existing PR body'
+
 # AlmaLinux uses uname/CMake architecture names and Node distribution names for
 # different purposes. Keep both mappings explicit and keep Node archive names
 # independent from the machine spelling.

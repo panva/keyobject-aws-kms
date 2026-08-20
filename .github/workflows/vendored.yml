@@ -101,34 +101,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          existing_pr=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+          scripts/dependency-pr-body.sh origin/main > /tmp/pr-body.md
+          existing_pr_number=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
             -f state=open \
             -f head="$GITHUB_REPOSITORY_OWNER:deps/bump" \
             -f base=main \
-            --jq '.[0].html_url // empty')
-          if [ -n "$existing_pr" ]; then
-            echo "an open PR already tracks deps/bump; the force-push updated $existing_pr"
+            --jq '.[0].number // empty')
+          if [ -n "$existing_pr_number" ]; then
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/pulls/$existing_pr_number" \
+              -F body=@/tmp/pr-body.md --silent
+            echo "the force-push and description updated https://github.com/$GITHUB_REPOSITORY/pull/$existing_pr_number"
             exit 0
           fi
-          # Keep the quoted heredoc indented so it remains inside the YAML block.
-          cat > /tmp/pr-body.md <<'EOF'
-          Opened weekly by `.github/workflows/vendored.yml`.
-
-          This branch is **reset off `main`** every week and force-pushed, so it
-          is always exactly `main` plus one commit per dependency that moved. It
-          is derived state: do not commit onto it, and expect history to be
-          rewritten.
-
-          **Mark this ready for review to run CI.** It is opened as a draft, and
-          this repository gates CI behind a non-draft pull request. The
-          `ready_for_review` action is an explicit CI trigger.
-
-          An `aws-sdk-cpp` bump moves vendored s2n. The build checks whether the
-          local s2n compatibility patch is still applicable or can be removed.
-          EOF
-          # The heredoc body is indented for YAML's sake, so strip that indent
-          # before it becomes the PR description.
-          sed -i 's/^          //' /tmp/pr-body.md
           compare_url="https://github.com/$GITHUB_REPOSITORY/compare/main...deps/bump?expand=1"
           if ! pr_url=$(gh pr create --repo "$GITHUB_REPOSITORY" \
             --draft --base main --head deps/bump \

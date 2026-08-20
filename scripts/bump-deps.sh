@@ -73,10 +73,8 @@ if [[ $cur != "$latest" ]]; then
   # ASN1_STRING_data source shapes, so they require review if upstream fixes
   # either issue or moves the code.
   # Whoever reviews this needs to know that before they see a red build.
-  commit "$(printf 'build: bump aws-sdk-cpp to %s\n\n%s' "$latest" \
-"Was $cur.
-
-This moves vendored s2n. scripts/patch-s2n-empty-kdf.sh and
+  commit "$(printf 'build: bump aws-sdk-cpp from %s to %s\n\n%s' "$cur" "$latest" \
+"This moves vendored s2n. scripts/patch-s2n-empty-kdf.sh and
 scripts/patch-s2n-openssl4.sh assert exact source shapes and fail loudly when
 they change, so a red build here is expected to mean one of:
 
@@ -111,10 +109,10 @@ while IFS='|' read -r name repo tag _assets _repofiles; do
   # uses, which is a fact worth failing on rather than skipping past.
   scripts/update-vendored.sh update "$name" "$newtag"
   git add third_party
-  commit "build: bump $name to $newtag
+  commit "build: bump $name from $tag to $newtag
 
-Was $tag. Refreshed by scripts/update-vendored.sh, which re-downloads the
-release assets and verifies the API surface src/ depends on still exists."
+Refreshed by scripts/update-vendored.sh, which re-downloads the release assets
+and verifies the API surface src/ depends on still exists."
 done < <(grep -v '^[[:space:]]*#' third_party/vendored.manifest | grep '|')
 
 echo
