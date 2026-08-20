@@ -87,18 +87,13 @@ const STATUS = {
 
 export function createKmsStub({ verbose = !!process.env.AWSKMS_STUB_VERBOSE } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'awskms-stub-'));
-  const keys = new Map(); // key id -> { spec, pemPath, spkiDer }
+  const keys = new Map(); // role + spec -> { spec, pemPath, spkiDer }
+  let supportedSpecs;
   let requests = [];
 
-  /* Any KeySpec name appearing in the key id selects that spec, so tests can use
-   * realistic aliases and ARNs. Generated on first use and kept for the life of
-   * the stub, so load/sign/verify all agree. */
-  function resolve(keyId) {
-    if (keys.has(keyId)) return keys.get(keyId);
-    const spec = Object.keys(SPECS).find((s) =>
-      keyId.toLowerCase().includes(s.toLowerCase()),
-    );
-    if (!spec) return null;
+  function generate(role, spec) {
+    const cacheKey = `${role}:${spec}`;
+    if (keys.has(cacheKey)) return keys.get(cacheKey);
     const { algorithm, options } = SPECS[spec];
     let pair;
     try {
@@ -106,15 +101,51 @@ export function createKmsStub({ verbose = !!process.env.AWSKMS_STUB_VERBOSE } = 
     } catch {
       return null; // host openssl too old for this spec
     }
-    const pemPath = join(dir, `${spec}-${keys.size}.pem`);
+    const pemPath = join(dir, `${role}-${spec}.pem`);
     writeFileSync(pemPath, pair.privateKey.export({ type: 'pkcs8', format: 'pem' }));
     const record = {
       spec,
       pemPath,
       spkiDer: pair.publicKey.export({ type: 'spki', format: 'der' }),
     };
-    keys.set(keyId, record);
+    keys.set(cacheKey, record);
     return record;
+  }
+
+  /* Any KeySpec name appearing in the key id selects that spec, so tests can use
+   * realistic aliases and ARNs. The offline inventory has exactly two keys per
+   * spec: `test` and `other`. An ARN denotes the test key, just as the real ARN
+   * and alias in a manifest identify the same KMS key. This is lookup-only: no
+   * request handler can accidentally bring variable-time key generation back
+   * inside the AWS SDK's timeout window. */
+  function resolve(keyId) {
+    const spec = Object.keys(SPECS).find((s) =>
+      keyId.toLowerCase().includes(s.toLowerCase()),
+    );
+    if (!spec) return null;
+    const role = keyId.toLowerCase().includes('other-') ? 'other' : 'test';
+    return keys.get(`${role}:${spec}`) ?? null;
+  }
+
+  /*
+   * Key generation is deliberately outside the request handler. RSA-4096 key
+   * generation has unbounded runtime and can occasionally exceed the AWS SDK's
+   * three-second request timeout. Generating both inventory roles before the
+   * server starts also preserves the negative tests' requirement that `test`
+   * and `other` use different keys.
+   */
+  function prepareKeys() {
+    if (supportedSpecs) return supportedSpecs;
+    supportedSpecs = {};
+    for (const [spec, { cliName }] of Object.entries(SPECS)) {
+      let supported = cliName ? opensslSupports(cliName) : true;
+      if (supported) {
+        supported =
+          generate('test', spec) !== null && generate('other', spec) !== null;
+      }
+      supportedSpecs[spec] = supported;
+    }
+    return supportedSpecs;
   }
 
   const send = (res, status, body) => {
@@ -345,20 +376,10 @@ export function createKmsStub({ verbose = !!process.env.AWSKMS_STUB_VERBOSE } = 
     },
     /* Which specs this stub can actually serve, so tests can skip the rest. */
     supported() {
-      const out = {};
-      for (const [spec, { algorithm, cliName }] of Object.entries(SPECS)) {
-        out[spec] = cliName ? opensslSupports(cliName) : true;
-        if (out[spec]) {
-          try {
-            generateKeyPairSync(algorithm, SPECS[spec].options);
-          } catch {
-            out[spec] = false;
-          }
-        }
-      }
-      return out;
+      return { ...prepareKeys() };
     },
     async listen() {
+      prepareKeys();
       await new Promise((r) => server.listen(0, '127.0.0.1', r));
       const { port } = server.address();
       return { port, endpoint: `http://127.0.0.1:${port}` };

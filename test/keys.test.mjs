@@ -43,6 +43,7 @@ const CASES = [
      * against a real ARN. A real ARN cannot be hardcoded here: keys are recreated
      * every run, so it changes legitimately. */
     uri: `aws-kms:key-id=${realArn('test', 'RSA_4096') ?? 'arn:aws:kms:eu-central-1:111122223333:key/RSA_4096'}`,
+    aliasUri: uri('test', 'RSA_4096'),
     keyType: 'rsa',
     details: { modulusLength: 4096, publicExponent: 65537n },
   },
@@ -151,9 +152,16 @@ for (const c of CASES) {
     test('equals() identifies the same key across loads', () => {
       const key = load();
       assert.equal(key.equals(load()), true);
-      // A different key id is a different key even when the spec matches, so
-      // this must be false for every case -- equality compares the public halves,
-      // not the URI.
+      if (c.aliasUri) {
+        assert.equal(
+          key.equals(createPrivateKey({ key: new URL(c.aliasUri) })),
+          true,
+          'the ARN and alias must identify the same key',
+        );
+      }
+      // The other inventory role is a different key even when the spec matches,
+      // so this must be false for every case -- equality compares the public
+      // halves, not the URI.
       const other = createPrivateKey({
         key: new URL(uri('other', c.label)),
       });
