@@ -59,7 +59,6 @@ manifest.awsSdkTag = '1.11.855';
 for (const name of [
   'aws-cpp-sdk-core',
   'aws-cpp-sdk-kms',
-  'aws-sdk-cpp-third-party',
 ]) {
   manifest.components.find((component) => component.name === name).version =
     '1.11.855';
@@ -67,9 +66,11 @@ for (const name of [
 const commits = new Map([
   ['aws-crt-cpp', '72f84bc327462f405c4994228fffe1eeb16cca72'],
   ['aws-c-cal', '9edd8eac2b21ca6a04535b91d60d361c2f1bb60f'],
+  ['aws-c-common', '1111111111111111111111111111111111111111'],
   ['aws-c-io', '54350963b64dfc6c4b0ea623b08aa252aae3d7d7'],
   ['aws-c-s3', '1f29ef8871a27dc8b90325418780659bac534d71'],
   ['aws-c-sdkutils', 'cb14fea362c82c995eebd34e2e96590ab4e0ed58'],
+  ['aws-checksums', '2222222222222222222222222222222222222222'],
   ['s2n-tls', 'f5f6c6c2ce2370de1aa3ade6899a7321d1127bb8'],
 ]);
 for (const component of manifest.components) {
@@ -81,6 +82,64 @@ cat > "$bump_fixture/cmake/FetchAwsSdkKms.cmake" <<'EOF'
 set(AWSKMS_AWS_SDK_TAG "1.11.855" CACHE STRING
   "fixture")
 EOF
+
+# The public manifest is also packaging policy. Prove its target groups,
+# embedded-component declarations, SPDX expressions, and duplicate provenance
+# links cannot drift independently.
+license_manifest="$bump_fixture/third_party/components.json"
+license_baseline="$bump_fixture/components.baseline.json"
+cp "$license_manifest" "$license_baseline"
+assert_license_manifest_fails() {
+  local mutation=$1 expected=$2 output="$bump_fixture/license-$1.err" rc
+  cp "$license_baseline" "$license_manifest"
+  node - "$license_manifest" "$mutation" <<'EOF'
+const fs = require('node:fs');
+
+const file = process.argv[2];
+const mutation = process.argv[3];
+const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+const component = (name) => manifest.components.find((entry) => entry.name === name);
+switch (mutation) {
+  case 'unsupported-target':
+    component('cjson').targets = 'windows';
+    break;
+  case 'wrong-target-group':
+    component('cjson').targets = 'darwin';
+    break;
+  case 'license-expression':
+    component('libgcc').licenseExpression = 'GPL-3.0-or-later';
+    break;
+  case 'missing-embedded-component':
+    manifest.components = manifest.components.filter(({ name }) => name !== 'xxhash');
+    break;
+  case 'apple-commit':
+    component('apple-commoncrypto-spi').commit =
+      '4444444444444444444444444444444444444444';
+    break;
+  default:
+    throw new Error(`unknown license mutation: ${mutation}`);
+}
+fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+EOF
+  set +e
+  node "$bump_fixture/scripts/check-licenses.mjs" \
+    >"$bump_fixture/license-$mutation.out" 2>"$output"
+  rc=$?
+  set -e
+  cp "$license_baseline" "$license_manifest"
+  [[ $rc -ne 0 ]] || fail "license checker accepted $mutation"
+  grep -Fq "$expected" "$output" ||
+    fail "$mutation license-check failure is not actionable"
+}
+
+assert_license_manifest_fails unsupported-target 'cjson has unsupported targets windows'
+assert_license_manifest_fails wrong-target-group 'cjson targets drift'
+assert_license_manifest_fails license-expression 'libgcc licenseExpression drift'
+assert_license_manifest_fails missing-embedded-component 'component inventory drift'
+assert_license_manifest_fails apple-commit \
+  'apple-commoncrypto-spi commit must match aws-c-cal'
+cp "$license_baseline" "$license_manifest"
+
 cat > "$bump_fixture/third_party/vendored.manifest" <<'EOF'
 ada | ada-url/ada | v3.2.7 | ada.cpp ada.h ada_c.h | LICENSE-MIT
 EOF
@@ -99,6 +158,7 @@ case $2 in
   'repos/aws/aws-sdk-cpp/tags?per_page=100') printf '1.11.874\n' ;;
   'repos/ada-url/ada/releases/latest') printf 'v3.2.8\n' ;;
   *)
+    if [[ -n ${FAKE_GH_LOG:-} ]]; then printf '%s\n' "$2" >> "$FAKE_GH_LOG"; fi
     node -e '
       const responses = require(process.argv[1]);
       const response = responses[process.argv[2]];
@@ -149,6 +209,7 @@ const legalTree = (files) => ({
     path: file, mode: '100644', type: 'blob', sha,
   })),
 });
+const reviewedFile = (path, sha) => ({ path, sha, type: 'file' });
 const crtTree = legalTree({
   LICENSE: 'd645695673349e3947e8e5ae42332d0ac3164cd7',
   NOTICE: '8b820137a0aa14f48ecaa89c3602139eaa2f7f88',
@@ -170,10 +231,39 @@ const responses = {
     'LICENSE.txt': '3adf3884dda91cc70aca0b8553406b159a530702',
     'NOTICE.txt': '66bbe1f2efa5f06838ef6d68a4644c858a8f92fa',
   }),
+  'repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp?ref=1.11.874': reviewedFile(
+    'src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp',
+    'f4a4169239cfc6f911de2c55b2d75767cbaf3dbe',
+  ),
+  'repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/include/aws/core/external/cjson/cJSON.h?ref=1.11.874': reviewedFile(
+    'src/aws-cpp-sdk-core/include/aws/core/external/cjson/cJSON.h',
+    '293586ac8ae3fd5aed1d61f5295dbed9abe46579',
+  ),
+  'repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/source/external/tinyxml2/tinyxml2.cpp?ref=1.11.874': reviewedFile(
+    'src/aws-cpp-sdk-core/source/external/tinyxml2/tinyxml2.cpp',
+    '48131817bfcd3259631bb47ced9ef6445c02f035',
+  ),
+  'repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/include/aws/core/external/tinyxml2/tinyxml2.h?ref=1.11.874': reviewedFile(
+    'src/aws-cpp-sdk-core/include/aws/core/external/tinyxml2/tinyxml2.h',
+    '3917ce68620a3858ed4938d8206663d1901ff3d7',
+  ),
   [`repos/awslabs/aws-c-cal/git/trees/${gitlinks['crt/aws-c-cal']}`]: legalTree({
     LICENSE: '67db8588217f266eb561f75fae738656325deac9',
     NOTICE: 'df81ba71af0026d3dab3ab7a9ad68bd15540b575',
   }),
+  [`repos/awslabs/aws-c-cal/contents/source/darwin/common_cryptor_spi.h?ref=${gitlinks['crt/aws-c-cal']}`]: reviewedFile(
+    'source/darwin/common_cryptor_spi.h',
+    'efe620103b8e8cef662f924704bf58777e005597',
+  ),
+  [`repos/awslabs/aws-c-common/git/trees/${gitlinks['crt/aws-c-common']}`]: legalTree({
+    LICENSE: 'd645695673349e3947e8e5ae42332d0ac3164cd7',
+    NOTICE: 'dae662e8b4ddc581eab03e5198d56b1b416df26d',
+    'THIRD-PARTY-LICENSES.txt': '4fd9353d7d8fe1ea937b159e2202233db21ac8fb',
+  }),
+  [`repos/awslabs/aws-c-common/contents/THIRD-PARTY-LICENSES.txt?ref=${gitlinks['crt/aws-c-common']}`]: reviewedFile(
+    'THIRD-PARTY-LICENSES.txt',
+    '4fd9353d7d8fe1ea937b159e2202233db21ac8fb',
+  ),
   [`repos/awslabs/aws-c-io/git/trees/${gitlinks['crt/aws-c-io']}`]: legalTree({
     LICENSE: 'd645695673349e3947e8e5ae42332d0ac3164cd7',
     NOTICE: '7939cd2397dc0b7a4b1aa55f23ad6d97f5ad1211',
@@ -186,6 +276,13 @@ const responses = {
     LICENSE: '67db8588217f266eb561f75fae738656325deac9',
     NOTICE: '616fc5889451895dbf9768e6787c8308c33bef22',
   }),
+  [`repos/awslabs/aws-checksums/git/trees/${gitlinks['crt/aws-checksums']}`]: legalTree({
+    LICENSE: '8dada3edaf50dbc082c9a125058f25def75e625a',
+  }),
+  [`repos/awslabs/aws-checksums/contents/source/external/xxhash.h?ref=${gitlinks['crt/aws-checksums']}`]: reviewedFile(
+    'source/external/xxhash.h',
+    '2ee0db661812f096abe8db478313722579849543',
+  ),
   [`repos/awslabs/s2n/git/trees/${gitlinks['crt/s2n']}`]: legalTree({
     LICENSE: 'd645695673349e3947e8e5ae42332d0ac3164cd7',
     NOTICE: 'f8bbcc301b59800d2f6ac5c1f82cb2d8bcff31b2',
@@ -219,6 +316,13 @@ const s2nEndpoint = `repos/awslabs/s2n/git/trees/${gitlinks['crt/s2n']}`;
 legalDrift[s2nEndpoint].tree.find(({ path: file }) => file === 'NOTICE').sha =
   '2222222222222222222222222222222222222222';
 write('gh-responses-legal-drift.json', legalDrift);
+
+const reviewedSourceDrift = structuredClone(responses);
+const cjsonSourceEndpoint =
+  'repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp?ref=1.11.874';
+reviewedSourceDrift[cjsonSourceEndpoint].sha =
+  '3333333333333333333333333333333333333333';
+write('gh-responses-reviewed-source-drift.json', reviewedSourceDrift);
 EOF
 
 assert_component_update_fails() {
@@ -246,6 +350,10 @@ assert_component_update_fails \
 assert_component_update_fails \
   gh-responses-legal-drift.json \
   'awslabs/s2n NOTICE changed' legal-drift
+assert_component_update_fails \
+  gh-responses-reviewed-source-drift.json \
+  'reviewed source src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp changed' \
+  reviewed-source-drift
 git -C "$bump_fixture" init -q
 git -C "$bump_fixture" config user.name fixture
 git -C "$bump_fixture" config user.email fixture@example.com
@@ -254,9 +362,24 @@ git -C "$bump_fixture" add cmake scripts third_party
 git -C "$bump_fixture" commit -qm base
 git -C "$bump_fixture" branch -M main
 git -C "$bump_fixture" checkout -qb deps/bump
+: > "$bump_fixture/gh-requests.log"
 PATH="$bump_fixture/fake-bin:$PATH" \
   FAKE_GH_RESPONSES="$bump_fixture/gh-responses.json" \
+  FAKE_GH_LOG="$bump_fixture/gh-requests.log" \
   "$bump_fixture/scripts/bump-deps.sh" >/dev/null
+
+while IFS= read -r endpoint; do
+  grep -Fxq "$endpoint" "$bump_fixture/gh-requests.log" ||
+    fail "AWS component updater did not verify reviewed source: $endpoint"
+done <<'EOF'
+repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp?ref=1.11.874
+repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/include/aws/core/external/cjson/cJSON.h?ref=1.11.874
+repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/source/external/tinyxml2/tinyxml2.cpp?ref=1.11.874
+repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/include/aws/core/external/tinyxml2/tinyxml2.h?ref=1.11.874
+repos/awslabs/aws-c-cal/contents/source/darwin/common_cryptor_spi.h?ref=8aa2a48a09f93c65d4cf06388e143a6584de6321
+repos/awslabs/aws-c-common/contents/THIRD-PARTY-LICENSES.txt?ref=3c69b871dfa1815231802febf1bb6899f84cccdb
+repos/awslabs/aws-checksums/contents/source/external/xxhash.h?ref=1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e
+EOF
 
 bump_subjects=$(git -C "$bump_fixture" log --reverse --format='%s' main..HEAD)
 expected_bump_subjects=$'build: bump aws-sdk-cpp from 1.11.855 to 1.11.874\nbuild: bump ada from v3.2.7 to v3.2.8'
@@ -269,8 +392,8 @@ expected_bump_subjects=$'build: bump aws-sdk-cpp from 1.11.855 to 1.11.874\nbuil
 component_summary=$(node -e '
   const manifest = require(process.argv[1]);
   const wanted = [
-    "aws-crt-cpp", "aws-c-cal", "aws-c-io", "aws-c-s3",
-    "aws-c-sdkutils", "s2n-tls",
+    "aws-crt-cpp", "aws-c-cal", "apple-commoncrypto-spi", "aws-c-common",
+    "aws-c-io", "aws-c-s3", "aws-c-sdkutils", "aws-checksums", "s2n-tls",
   ];
   console.log(manifest.awsSdkTag);
   for (const name of wanted) {
@@ -282,9 +405,12 @@ expected_component_summary=$(cat <<'EOF'
 1.11.874
 aws-crt-cpp=851d8d003c9d5150edab56807e2393013f3771de
 aws-c-cal=8aa2a48a09f93c65d4cf06388e143a6584de6321
+apple-commoncrypto-spi=8aa2a48a09f93c65d4cf06388e143a6584de6321
+aws-c-common=3c69b871dfa1815231802febf1bb6899f84cccdb
 aws-c-io=e2946c99521fa12d285c9a0829c92b1bf713922b
 aws-c-s3=a852faa2df3ab2b31fb4cfd64fd3379a2f4ae22e
 aws-c-sdkutils=a1cc19f53b63658f1b1400b36f199eafeeb895a6
+aws-checksums=1d5f2f1f3e5d013aae8810878ceb5b3f6f258c4e
 s2n-tls=66b1c94d1dfc99b237427cbde230eca63bb8b89c
 EOF
 )

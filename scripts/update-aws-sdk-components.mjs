@@ -27,10 +27,66 @@ const sdkLegalFiles = new Map([
   ['LICENSE.txt', '3adf3884dda91cc70aca0b8553406b159a530702'],
   ['NOTICE.txt', '66bbe1f2efa5f06838ef6d68a4644c858a8f92fa'],
 ]);
+const sdkReviewedFiles = new Map([
+  [
+    'src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp',
+    'f4a4169239cfc6f911de2c55b2d75767cbaf3dbe',
+  ],
+  [
+    'src/aws-cpp-sdk-core/include/aws/core/external/cjson/cJSON.h',
+    '293586ac8ae3fd5aed1d61f5295dbed9abe46579',
+  ],
+  [
+    'src/aws-cpp-sdk-core/source/external/tinyxml2/tinyxml2.cpp',
+    '48131817bfcd3259631bb47ced9ef6445c02f035',
+  ],
+  [
+    'src/aws-cpp-sdk-core/include/aws/core/external/tinyxml2/tinyxml2.h',
+    '3917ce68620a3858ed4938d8206663d1901ff3d7',
+  ],
+]);
+const reviewedComponentDeclarations = new Map([
+  ['cjson', {
+    version: '1.7.19',
+    license: 'cJSON-MIT.txt',
+    licenseExpression: 'MIT',
+    notice: null,
+    targets: 'all',
+  }],
+  ['libcbor', {
+    version: '0.13.0',
+    license: 'libcbor-MIT.txt',
+    licenseExpression: 'MIT',
+    notice: null,
+    targets: 'all',
+  }],
+  ['tinyxml2', {
+    version: '11.0.0',
+    license: 'tinyxml2-zlib.txt',
+    licenseExpression: 'Zlib',
+    notice: null,
+    targets: 'all',
+  }],
+  ['xxhash', {
+    version: '0.8.3',
+    license: 'xxHash-BSD-2-Clause.txt',
+    licenseExpression: 'BSD-2-Clause',
+    notice: null,
+    targets: 'all',
+  }],
+  ['apple-commoncrypto-spi', {
+    license: 'APSL-2.0.txt',
+    licenseExpression: 'APSL-2.0',
+    notice: 'Apple-CommonCrypto-SPI-NOTICE.txt',
+    targets: 'darwin',
+  }],
+]);
 const crtLegalFiles = new Map([
   ['LICENSE', 'd645695673349e3947e8e5ae42332d0ac3164cd7'],
   ['NOTICE', '8b820137a0aa14f48ecaa89c3602139eaa2f7f88'],
 ]);
+const awsCCommonThirdPartyLicensesSha =
+  '4fd9353d7d8fe1ea937b159e2202233db21ac8fb';
 const gitlinkComponents = new Map([
   ['crt/aws-c-auth', {
     name: 'aws-c-auth',
@@ -47,6 +103,12 @@ const gitlinkComponents = new Map([
       ['LICENSE', '67db8588217f266eb561f75fae738656325deac9'],
       ['NOTICE', 'df81ba71af0026d3dab3ab7a9ad68bd15540b575'],
     ]),
+    reviewedFiles: new Map([
+      [
+        'source/darwin/common_cryptor_spi.h',
+        'efe620103b8e8cef662f924704bf58777e005597',
+      ],
+    ]),
   }],
   ['crt/aws-c-common', {
     name: 'aws-c-common',
@@ -54,6 +116,16 @@ const gitlinkComponents = new Map([
     legalFiles: new Map([
       ['LICENSE', 'd645695673349e3947e8e5ae42332d0ac3164cd7'],
       ['NOTICE', 'dae662e8b4ddc581eab03e5198d56b1b416df26d'],
+      [
+        'THIRD-PARTY-LICENSES.txt',
+        awsCCommonThirdPartyLicensesSha,
+      ],
+    ]),
+    reviewedFiles: new Map([
+      [
+        'THIRD-PARTY-LICENSES.txt',
+        awsCCommonThirdPartyLicensesSha,
+      ],
     ]),
   }],
   ['crt/aws-c-compression', {
@@ -117,6 +189,12 @@ const gitlinkComponents = new Map([
     repository: 'awslabs/aws-checksums',
     legalFiles: new Map([
       ['LICENSE', '8dada3edaf50dbc082c9a125058f25def75e625a'],
+    ]),
+    reviewedFiles: new Map([
+      [
+        'source/external/xxhash.h',
+        '2ee0db661812f096abe8db478313722579849543',
+      ],
     ]),
   }],
   ['crt/s2n', {
@@ -202,6 +280,9 @@ function parseGitmodules(payload) {
   return modules;
 }
 
+const legalFileName =
+  /^(?:(?:LICENSES?|NOTICES?|COPYING|COPYRIGHT)(?:[._-].*)?|THIRD[-_]PARTY[-_](?:LICENSES?|NOTICES?)(?:[._-].*)?)$/i;
+
 function verifyLegalFiles(repository, ref, expected, response) {
   const tree = response ?? ghApi(`repos/${repository}/git/trees/${ref}`);
   if (tree.truncated === true || !Array.isArray(tree.tree)) {
@@ -210,7 +291,7 @@ function verifyLegalFiles(repository, ref, expected, response) {
   const actual = new Map(
     tree.tree
       .filter(({ type, path }) =>
-        type === 'blob' && /^(?:LICENSE|NOTICE)(?:[._-].*)?$/.test(path),
+        type === 'blob' && legalFileName.test(path),
       )
       .map(({ path, sha }) => [path, requireSha(sha, `${repository} ${path}`)]),
   );
@@ -219,6 +300,21 @@ function verifyLegalFiles(repository, ref, expected, response) {
     if (actual.get(path) !== expectedSha) {
       fail(
         `${repository} ${path} changed at ${ref}; refresh the bundled license/notice payload before updating its reviewed blob SHA`,
+      );
+    }
+  }
+}
+
+function verifyReviewedFiles(repository, ref, expected) {
+  for (const [path, expectedSha] of expected) {
+    const file = ghApi(`repos/${repository}/contents/${path}?ref=${ref}`);
+    if (file.type !== 'file' || file.path !== path) {
+      fail(`${repository} reviewed source ${path} is missing or is not a file at ${ref}`);
+    }
+    const actualSha = requireSha(file.sha, `${repository} ${path}`);
+    if (actualSha !== expectedSha) {
+      fail(
+        `${repository} reviewed source ${path} changed at ${ref}; review its embedded dependency version and license, refresh the bundled legal payload, and update its reviewed blob SHA`,
       );
     }
   }
@@ -273,6 +369,7 @@ try {
   for (const path of excludedGitlinks.keys()) gitlinks.delete(path);
 
   verifyLegalFiles('aws/aws-sdk-cpp', version, sdkLegalFiles);
+  verifyReviewedFiles('aws/aws-sdk-cpp', version, sdkReviewedFiles);
   verifyLegalFiles('awslabs/aws-crt-cpp', crtCommit, crtLegalFiles, tree);
 
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -286,11 +383,28 @@ try {
     }
     components.set(component.name, component);
   }
+  for (const [name, expected] of reviewedComponentDeclarations) {
+    const component = components.get(name);
+    if (component == null) {
+      fail(`third_party/components.json is missing reviewed component ${name}`);
+    }
+    for (const [field, expectedValue] of Object.entries(expected)) {
+      if (component[field] !== expectedValue) {
+        fail(
+          `third_party/components.json ${name} ${field} changed; review the pinned upstream source and bundled legal payload`,
+        );
+      }
+    }
+  }
+
+  const appleSpiComponent = components.get('apple-commoncrypto-spi');
+  if (typeof appleSpiComponent.commit !== 'string') {
+    fail('third_party/components.json apple-commoncrypto-spi commit is missing');
+  }
 
   for (const name of [
     'aws-cpp-sdk-core',
     'aws-cpp-sdk-kms',
-    'aws-sdk-cpp-third-party',
   ]) {
     const component = components.get(name);
     if (component == null || typeof component.version !== 'string') {
@@ -311,6 +425,9 @@ try {
       fail(`third_party/components.json is missing git component ${details.name}`);
     }
     const commit = gitlinks.get(path);
+    if (details.reviewedFiles != null) {
+      verifyReviewedFiles(details.repository, commit, details.reviewedFiles);
+    }
     if (component.commit !== commit) {
       verifyLegalFiles(
         details.repository,
@@ -319,6 +436,7 @@ try {
       );
     }
     component.commit = commit;
+    if (details.name === 'aws-c-cal') appleSpiComponent.commit = commit;
   }
   manifest.awsSdkTag = version;
 

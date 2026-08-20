@@ -71,22 +71,18 @@ cleanup() {
 trap cleanup EXIT
 
 destination="$stage/$name"
-mkdir -p "$destination/docs" "$destination/third_party"
+mkdir -p "$destination/docs"
 cp "$build_dir/$module" "$destination/"
 cp "$build_dir/awskms.relocatable.cnf" "$destination/awskms.cnf"
-cp scripts/check.mjs LICENSE THIRD_PARTY_NOTICES.md "$destination/"
+cp scripts/check.mjs "$destination/"
 cp docs/INSTALL.md "$destination/docs/"
-cp third_party/components.json "$destination/third_party/"
-cp -R third_party/licenses "$destination/third_party/"
+node scripts/stage-target-legal.mjs --target "$target" --out "$destination" \
+  || die "target-specific legal payload staging failed"
 
+cmp -s LICENSE "$destination/LICENSE" \
+  || die "staged project license differs from the authoritative file"
 cmp -s THIRD_PARTY_NOTICES.md "$destination/THIRD_PARTY_NOTICES.md" \
   || die "staged third-party notice differs from the authoritative file"
-cmp -s third_party/components.json "$destination/third_party/components.json" \
-  || die "staged component manifest differs from the authoritative file"
-for legal in third_party/licenses/*; do
-  cmp -s "$legal" "$destination/$legal" \
-    || die "staged $(basename "$legal") differs from the authoritative file"
-done
 
 tar czf "$temporary_archive" -C "$stage" "$name"
 
@@ -107,7 +103,7 @@ expected=$(
     "$name/third_party/" \
     "$name/third_party/components.json" \
     "$name/third_party/licenses/"
-  for legal in third_party/licenses/*; do
+  for legal in "$destination"/third_party/licenses/*; do
     printf '%s/third_party/licenses/%s\n' "$name" "$(basename "$legal")"
   done
   )

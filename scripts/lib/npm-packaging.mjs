@@ -60,10 +60,11 @@ export const targets = Object.freeze([
 const targetByName = new Map(targets.map((target) => [target.name, target]))
 const satelliteNames = targets.map(({ name }) => `@keyobject/aws-kms-${name}`).sort()
 const componentNames = [
+  'apple-commoncrypto-spi',
   'ada',
+  'cjson',
   'aws-cpp-sdk-core',
   'aws-cpp-sdk-kms',
-  'aws-sdk-cpp-third-party',
   'aws-crt-cpp',
   'aws-c-auth',
   'aws-c-cal',
@@ -76,10 +77,20 @@ const componentNames = [
   'aws-c-s3',
   'aws-c-sdkutils',
   'aws-checksums',
+  'libcbor',
   's2n-tls',
+  'tinyxml2',
+  'xxhash',
   'libstdc++',
   'libgcc',
 ].sort()
+
+const componentTargetGroups = new Set(['all', 'darwin', 'linux'])
+const componentTargetOverrides = new Map([
+  ['apple-commoncrypto-spi', 'darwin'],
+  ['libgcc', 'linux'],
+  ['libstdc++', 'linux'],
+])
 
 const coreInventory = [
   'package/LICENSE',
@@ -226,6 +237,19 @@ function validateLegalSource(root) {
     'component dependency graph is incomplete or unexpected',
   )
   for (const component of components.components) {
+    invariant(
+      componentTargetGroups.has(component.targets),
+      `${component.name} has an unsupported target group`,
+    )
+    invariant(
+      component.targets === (componentTargetOverrides.get(component.name) ?? 'all'),
+      `${component.name} has the wrong target group`,
+    )
+    invariant(
+      typeof component.licenseExpression === 'string' &&
+        component.licenseExpression.length > 0,
+      `${component.name} has no license expression`,
+    )
     if (component.commit != null) {
       invariant(
         typeof component.commit === 'string' && /^[0-9a-f]{40}$/u.test(component.commit),
@@ -236,7 +260,6 @@ function validateLegalSource(root) {
   for (const name of [
     'aws-cpp-sdk-core',
     'aws-cpp-sdk-kms',
-    'aws-sdk-cpp-third-party',
   ]) {
     const component = components.components.find((entry) => entry.name === name)
     invariant(component?.version === components.awsSdkTag, `${name} version does not match awsSdkTag`)
@@ -262,15 +285,57 @@ function validateLegalSource(root) {
   const files = new Map([
     ['LICENSE', readRegularFile(join(root, 'LICENSE'))],
     ['THIRD_PARTY_NOTICES.md', readRegularFile(join(root, 'THIRD_PARTY_NOTICES.md'))],
-    ['third_party/components.json', componentsBytes],
   ])
+  const licenseFiles = new Map()
   for (const name of licenseNames) {
-    files.set(
-      `third_party/licenses/${name}`,
+    licenseFiles.set(
+      name,
       readRegularFile(join(licenseDirectory, name), `third_party/licenses/${name}`),
     )
   }
+  return { components, files, licenseFiles, licenseNames }
+}
+
+function targetLegalPayload(legal, target) {
+  const components = {
+    ...legal.components,
+    components: legal.components.components.filter(
+      (component) => component.targets === 'all' || component.targets === target.os,
+    ),
+  }
+  invariant(
+    components.components.length > 0,
+    `${target.name} has no applicable third-party components`,
+  )
+
+  const referenced = new Set()
+  for (const component of components.components) {
+    for (const field of ['license', 'exception', 'notice']) {
+      const file = component[field]
+      if (file != null) referenced.add(file)
+    }
+  }
+  const licenseNames = sorted(referenced)
+  const files = new Map([
+    ...legal.files,
+    [
+      'third_party/components.json',
+      Buffer.from(`${JSON.stringify(components, null, 2)}\n`),
+    ],
+  ])
+  for (const name of licenseNames) {
+    const path = `third_party/licenses/${name}`
+    const bytes = legal.licenseFiles.get(name)
+    invariant(bytes != null, `${target.name} references missing legal file ${name}`)
+    files.set(path, bytes)
+  }
   return { components, files, licenseNames }
+}
+
+export function getTargetLegalPayload({ root, targetName }) {
+  root = resolve(root)
+  const target = getTarget(targetName)
+  return targetLegalPayload(validateLegalSource(root), target)
 }
 
 function replaceToken(text, token, replacement, label) {
@@ -349,6 +414,38 @@ function writeTreeFile(root, relativePath, bytes) {
   writeFileSync(path, bytes)
 }
 
+function writeTargetLegalPayload(destination, legal) {
+  for (const [path, bytes] of legal.files) {
+    const output = join(destination, ...path.split('/'))
+    invariant(!existsSync(output), `refusing to overwrite staged legal file: ${path}`)
+    writeTreeFile(destination, path, bytes)
+  }
+  for (const [path, expected] of legal.files) {
+    assertExactBytes(
+      readRegularFile(join(destination, ...path.split('/'))),
+      expected,
+      `staged ${path}`,
+    )
+  }
+}
+
+export function stageTargetLegalPayload({ root, destination, targetName }) {
+  root = resolve(root)
+  destination = resolve(destination)
+  const legal = getTargetLegalPayload({ root, targetName })
+  if (existsSync(destination)) {
+    const stat = lstatSync(destination)
+    invariant(
+      stat.isDirectory() && !stat.isSymbolicLink(),
+      'legal payload destination must be a real directory',
+    )
+  } else {
+    mkdirSync(destination, { recursive: true })
+  }
+  writeTargetLegalPayload(destination, legal)
+  return legal
+}
+
 function stageSatellite({ root, destination, target, version, source, legal }) {
   invariant(!existsSync(destination), `refusing to reuse satellite stage: ${destination}`)
   mkdirSync(destination, { recursive: true })
@@ -357,11 +454,7 @@ function stageSatellite({ root, destination, target, version, source, legal }) {
   writeTreeFile(destination, 'README.md', rendered.readme)
   writeTreeFile(destination, target.module, source.module)
   writeTreeFile(destination, 'awskms.cnf', source.config)
-  for (const [path, bytes] of legal.files) writeTreeFile(destination, path, bytes)
-
-  for (const [path, expected] of legal.files) {
-    assertExactBytes(readRegularFile(join(destination, ...path.split('/'))), expected, `staged ${path}`)
-  }
+  writeTargetLegalPayload(destination, legal)
   return rendered.manifest
 }
 
@@ -578,7 +671,7 @@ export function packBuildPackages({ root, buildDirectory, targetName, outputDire
   outputDirectory = resolve(outputDirectory)
   const target = getTarget(targetName)
   const manifest = validateCoreManifest(root)
-  const legal = validateLegalSource(root)
+  const legal = targetLegalPayload(validateLegalSource(root), target)
   const source = validateBuildSource({
     buildDirectory,
     target,
@@ -692,21 +785,20 @@ export function verifyReleaseArchives({
     !readme.includes(incompleteNotice),
     'refusing release while the README status notice remains',
   )
-  const legal = validateLegalSource(root)
+  const legalSource = validateLegalSource(root)
   const expectedNames = targets.map(
     ({ name }) => `awskms-${version}-${name}.tar.gz`,
   )
   assertDirectoryContainsExactly(artifactsDirectory, expectedNames, 'release artifact directory')
 
-  const projectFiles = new Map([
-    ['LICENSE', readRegularFile(join(root, 'LICENSE'))],
-    ['THIRD_PARTY_NOTICES.md', readRegularFile(join(root, 'THIRD_PARTY_NOTICES.md'))],
-    ['check.mjs', readRegularFile(join(root, 'scripts', 'check.mjs'))],
-    ['docs/INSTALL.md', readRegularFile(join(root, 'docs', 'INSTALL.md'))],
-    ...legal.files,
-  ])
   const archives = []
   for (const target of targets) {
+    const legal = targetLegalPayload(legalSource, target)
+    const projectFiles = new Map([
+      ['check.mjs', readRegularFile(join(root, 'scripts', 'check.mjs'))],
+      ['docs/INSTALL.md', readRegularFile(join(root, 'docs', 'INSTALL.md'))],
+      ...legal.files,
+    ])
     const archiveName = `awskms-${version}-${target.name}.tar.gz`
     const archivePath = join(artifactsDirectory, archiveName)
     const archive = readRegularFile(archivePath, archiveName)
@@ -728,9 +820,9 @@ export function verifyReleaseArchives({
       )
     }
     if (runPolicy) runArchivePolicy(root, archivePath)
-    archives.push({ archive, archiveName, archivePath, config, module, target })
+    archives.push({ archive, archiveName, archivePath, config, legal, module, target })
   }
-  return { archives, legal, manifest }
+  return { archives, manifest }
 }
 
 function pathContains(parent, child) {
@@ -808,13 +900,13 @@ export function assembleRelease({
         target: entry.target,
         version,
         source: entry,
-        legal: verified.legal,
+        legal: entry.legal,
       })
       const satelliteTarball = packStagedPackage({
         destination: satelliteDirectory,
         expectedName: `@keyobject/aws-kms-${entry.target.name}`,
         version,
-        inventory: satelliteInventory(entry.target, verified.legal.licenseNames),
+        inventory: satelliteInventory(entry.target, entry.legal.licenseNames),
         cacheDirectory,
       })
       assertExactBytes(

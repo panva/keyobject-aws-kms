@@ -15,6 +15,12 @@ die() {
 [[ -d $dist ]] || die "release directory not found: $dist"
 node scripts/check-licenses.mjs
 
+legal_reference=$(mktemp -d "${TMPDIR:-/tmp}/awskms-release-legal.XXXXXX")
+cleanup() {
+  rm -rf -- "$legal_reference"
+}
+trap cleanup EXIT
+
 targets=(
   darwin-arm64
   linux-arm64
@@ -23,7 +29,10 @@ targets=(
   linuxmusl-x64
 )
 
-mapfile -t archives < <(find "$dist" -maxdepth 1 -type f -name 'awskms-*.tar.gz' -print | sort)
+archives=()
+while IFS= read -r archive; do
+  archives+=("$archive")
+done < <(find "$dist" -maxdepth 1 -type f -name 'awskms-*.tar.gz' -print | sort)
 [[ ${#archives[@]} -eq ${#targets[@]} ]] \
   || die "expected ${#targets[@]} archives, found ${#archives[@]}"
 
@@ -35,6 +44,9 @@ for target in "${targets[@]}"; do
     darwin-*) module=aws-kms.dylib ;;
     *) module=aws-kms.so ;;
   esac
+  reference="$legal_reference/$target"
+  node scripts/stage-target-legal.mjs --target "$target" --out "$reference" \
+    || die "could not render the $target legal payload"
 
   listing=$(tar tzf "$archive" | sort)
   expected=$(
@@ -50,7 +62,7 @@ for target in "${targets[@]}"; do
       "$name/third_party/" \
       "$name/third_party/components.json" \
       "$name/third_party/licenses/"
-    for legal in third_party/licenses/*; do
+    for legal in "$reference"/third_party/licenses/*; do
       printf '%s/third_party/licenses/%s\n' "$name" "$(basename "$legal")"
     done
   )
@@ -62,11 +74,11 @@ for target in "${targets[@]}"; do
 
   unpack=$(mktemp -d)
   tar xzf "$archive" -C "$unpack"
-  cmp LICENSE "$unpack/$name/LICENSE"
-  cmp THIRD_PARTY_NOTICES.md "$unpack/$name/THIRD_PARTY_NOTICES.md"
+  cmp "$reference/LICENSE" "$unpack/$name/LICENSE"
+  cmp "$reference/THIRD_PARTY_NOTICES.md" "$unpack/$name/THIRD_PARTY_NOTICES.md"
   cmp docs/INSTALL.md "$unpack/$name/docs/INSTALL.md"
-  cmp third_party/components.json "$unpack/$name/third_party/components.json"
-  for legal in third_party/licenses/*; do
+  cmp "$reference/third_party/components.json" "$unpack/$name/third_party/components.json"
+  for legal in "$reference"/third_party/licenses/*; do
     cmp "$legal" "$unpack/$name/third_party/licenses/$(basename "$legal")"
   done
   rm -rf "$unpack"

@@ -16,34 +16,113 @@ assert.equal(manifest.schemaVersion, 1);
 assert.ok(sdkTag, 'could not read AWSKMS_AWS_SDK_TAG');
 assert.equal(manifest.awsSdkTag, sdkTag, 'AWS SDK component inventory drift');
 
-const required = new Set([
-  'ada',
-  'aws-cpp-sdk-core',
-  'aws-cpp-sdk-kms',
-  'aws-sdk-cpp-third-party',
-  'aws-crt-cpp',
-  'aws-c-auth',
-  'aws-c-cal',
-  'aws-c-common',
-  'aws-c-compression',
-  'aws-c-event-stream',
-  'aws-c-http',
-  'aws-c-io',
-  'aws-c-mqtt',
-  'aws-c-s3',
-  'aws-c-sdkutils',
-  'aws-checksums',
-  's2n-tls',
-  'libstdc++',
-  'libgcc',
+const expectedComponents = new Map([
+  ['ada', { licenseExpression: 'MIT', targets: 'all' }],
+  ['aws-cpp-sdk-core', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-cpp-sdk-kms', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-crt-cpp', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-auth', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-cal', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-common', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-compression', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-event-stream', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-http', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-io', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-mqtt', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-s3', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-c-sdkutils', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['aws-checksums', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  ['s2n-tls', { licenseExpression: 'Apache-2.0', targets: 'all' }],
+  [
+    'cjson',
+    {
+      version: '1.7.19',
+      license: 'cJSON-MIT.txt',
+      notice: null,
+      licenseExpression: 'MIT',
+      targets: 'all',
+    },
+  ],
+  [
+    'libcbor',
+    {
+      version: '0.13.0',
+      license: 'libcbor-MIT.txt',
+      notice: null,
+      licenseExpression: 'MIT',
+      targets: 'all',
+    },
+  ],
+  [
+    'tinyxml2',
+    {
+      version: '11.0.0',
+      license: 'tinyxml2-zlib.txt',
+      notice: null,
+      licenseExpression: 'Zlib',
+      targets: 'all',
+    },
+  ],
+  [
+    'xxhash',
+    {
+      version: '0.8.3',
+      license: 'xxHash-BSD-2-Clause.txt',
+      notice: null,
+      licenseExpression: 'BSD-2-Clause',
+      targets: 'all',
+    },
+  ],
+  [
+    'apple-commoncrypto-spi',
+    {
+      license: 'APSL-2.0.txt',
+      notice: 'Apple-CommonCrypto-SPI-NOTICE.txt',
+      licenseExpression: 'APSL-2.0',
+      targets: 'darwin',
+    },
+  ],
+  [
+    'libstdc++',
+    {
+      license: 'GPL-3.0.txt',
+      exception: 'GCC-RUNTIME-LIBRARY-EXCEPTION-3.1.txt',
+      notice: null,
+      licenseExpression: 'GPL-3.0-or-later WITH GCC-exception-3.1',
+      targets: 'linux',
+    },
+  ],
+  [
+    'libgcc',
+    {
+      license: 'GPL-3.0.txt',
+      exception: 'GCC-RUNTIME-LIBRARY-EXCEPTION-3.1.txt',
+      notice: null,
+      licenseExpression: 'GPL-3.0-or-later WITH GCC-exception-3.1',
+      targets: 'linux',
+    },
+  ],
 ]);
+const required = new Set(expectedComponents.keys());
 const names = new Set(manifest.components.map(({ name }) => name));
+assert.equal(names.size, manifest.components.length, 'duplicate component name');
 assert.deepEqual([...names].sort(), [...required].sort(), 'component inventory drift');
+
+const allowedTargets = new Set(['all', 'darwin', 'linux']);
+for (const component of manifest.components) {
+  assert.ok(
+    allowedTargets.has(component.targets),
+    `${component.name} has unsupported targets ${component.targets}`,
+  );
+  const expected = expectedComponents.get(component.name);
+  for (const [field, value] of Object.entries(expected)) {
+    assert.equal(component[field], value, `${component.name} ${field} drift`);
+  }
+}
 
 for (const name of [
   'aws-cpp-sdk-core',
   'aws-cpp-sdk-kms',
-  'aws-sdk-cpp-third-party',
 ]) {
   const component = manifest.components.find((entry) => entry.name === name);
   assert.equal(component.version, sdkTag, `${name} version drift`);
@@ -51,6 +130,11 @@ for (const name of [
 for (const component of manifest.components.filter(({ commit }) => commit != null)) {
   assert.match(component.commit, /^[0-9a-f]{40}$/, `${component.name} commit`);
 }
+assert.equal(
+  manifest.components.find(({ name }) => name === 'apple-commoncrypto-spi').commit,
+  manifest.components.find(({ name }) => name === 'aws-c-cal').commit,
+  'apple-commoncrypto-spi commit must match aws-c-cal',
+);
 
 const referenced = new Set();
 for (const component of manifest.components) {

@@ -16,6 +16,7 @@ import test from 'node:test'
 import {
   assembleRelease,
   packBuildPackages,
+  stageTargetLegalPayload,
   targets,
 } from '../lib/npm-packaging.mjs'
 
@@ -87,19 +88,18 @@ function stageArchivePayload({ root, stage, target, version, overrides = {} }) {
   const top = `awskms-${version}-${target.name}`
   const destination = join(stage, top)
   mkdirSync(join(destination, 'docs'), { recursive: true })
-  mkdirSync(join(destination, 'third_party'), { recursive: true })
-  copyPath(root, destination, 'LICENSE')
-  copyPath(root, destination, 'THIRD_PARTY_NOTICES.md')
   copyPath(root, destination, 'docs/INSTALL.md')
   copyPath(root, destination, 'scripts/check.mjs')
   cpSync(join(destination, 'scripts', 'check.mjs'), join(destination, 'check.mjs'))
   rmSync(join(destination, 'scripts'), { recursive: true })
-  copyPath(root, destination, 'third_party/components.json')
-  copyPath(root, destination, 'third_party/licenses')
+  stageTargetLegalPayload({ root, destination, targetName: target.name })
   writeFileSync(join(destination, target.module), overrides.module ?? moduleFor(target, version))
   writeFileSync(join(destination, 'awskms.cnf'), overrides.config ?? 'relocatable config\n')
   for (const [path, bytes] of Object.entries(overrides.files ?? {})) {
     writeFileSync(join(destination, ...path.split('/')), bytes)
+  }
+  for (const path of overrides.removeFiles ?? []) {
+    rmSync(join(destination, ...path.split('/')))
   }
   return top
 }
@@ -144,6 +144,24 @@ function tarEntry(archive, path) {
   return execFileSync('tar', ['-xOzf', archive, path])
 }
 
+function tarEntries(archive) {
+  return execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' })
+    .trimEnd()
+    .split('\n')
+}
+
+function referencedLegalFiles(components) {
+  return [
+    ...new Set(
+      components.flatMap((component) =>
+        ['license', 'exception', 'notice']
+          .map((field) => component[field])
+          .filter((value) => value != null),
+      ),
+    ),
+  ].sort()
+}
+
 test('build package staging uses the shared target implementation', (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'awskms-build-pack.'))
   t.after(() => rmSync(directory, { force: true, recursive: true }))
@@ -176,6 +194,114 @@ test('build package staging uses the shared target implementation', (t) => {
   assert.deepEqual(
     JSON.parse(tarEntry(result.satelliteTarball, 'package/package.json')),
     JSON.parse(readFileSync(join(output, 'platform', 'package.json'))),
+  )
+  const legalEntries = tarEntries(result.satelliteTarball).filter((entry) =>
+    entry.startsWith('package/third_party/licenses/'),
+  )
+  assert.ok(!legalEntries.some((entry) => /GPL|GCC-RUNTIME/u.test(entry)))
+})
+
+test('target legal staging rejects source inventory and target drift', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'awskms-legal-source.'))
+  t.after(() => rmSync(directory, { force: true, recursive: true }))
+
+  for (const [name, mutate, expected] of [
+    [
+      'missing',
+      (root) => rmSync(join(root, 'third_party', 'licenses', 'Apache-2.0.txt')),
+      /component dependency graph and license inventory differ/u,
+    ],
+    [
+      'unexpected',
+      (root) =>
+        writeFileSync(join(root, 'third_party', 'licenses', 'UNEXPECTED.txt'), 'nope\n'),
+      /component dependency graph and license inventory differ/u,
+    ],
+    [
+      'wrong-target',
+      (root) => {
+        const path = join(root, 'third_party', 'components.json')
+        const manifest = JSON.parse(readFileSync(path, 'utf8'))
+        manifest.components.find(({ name }) => name === 'libgcc').targets = 'all'
+        writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`)
+      },
+      /libgcc has the wrong target group/u,
+    ],
+  ]) {
+    const root = makeFixtureRoot(join(directory, name))
+    const output = join(directory, `${name}-out`)
+    mutate(root)
+    assert.throws(
+      () =>
+        stageTargetLegalPayload({
+          root,
+          destination: output,
+          targetName: 'darwin-arm64',
+        }),
+      expected,
+    )
+    assert.throws(() => readdirSync(output), /ENOENT/u)
+  }
+})
+
+test('native archive packaging stages the target legal payload', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'awskms-native-archive.'))
+  t.after(() => rmSync(directory, { force: true, recursive: true }))
+  const build = join(directory, 'build')
+  const output = join(directory, 'output')
+  mkdirSync(build)
+  mkdirSync(output)
+  writeFileSync(join(build, 'aws-kms.dylib'), 'darwin fixture\n')
+  writeFileSync(join(build, 'aws-kms.so'), 'linux fixture\n')
+  writeFileSync(join(build, 'awskms.relocatable.cnf'), 'relocatable config\n')
+  writeFileSync(join(build, 'awskms-backend'), 'aws\n')
+  const components = JSON.parse(
+    readFileSync(join(repository, 'third_party', 'components.json'), 'utf8'),
+  )
+  writeFileSync(join(build, 'awskms-dependencies'), `aws-sdk-cpp=${components.awsSdkTag}\n`)
+  const version = JSON.parse(
+    readFileSync(join(repository, 'npm', 'core', 'package.json'), 'utf8'),
+  ).version
+
+  for (const targetName of ['darwin-arm64', 'linux-x64']) {
+    execFileSync(
+      join(repository, 'scripts', 'package-archive.sh'),
+      [build, targetName, output],
+      { cwd: repository },
+    )
+  }
+
+  const darwin = join(output, `awskms-${version}-darwin-arm64.tar.gz`)
+  const linux = join(output, `awskms-${version}-linux-x64.tar.gz`)
+  const darwinEntries = tarEntries(darwin)
+  const linuxEntries = tarEntries(linux)
+  assert.ok(!darwinEntries.some((entry) => /GPL-3\.0|GCC-RUNTIME/u.test(entry)))
+  assert.ok(linuxEntries.some((entry) => entry.endsWith('/GPL-3.0.txt')))
+  assert.ok(
+    linuxEntries.some((entry) =>
+      entry.endsWith('/GCC-RUNTIME-LIBRARY-EXCEPTION-3.1.txt'),
+    ),
+  )
+  const darwinComponents = JSON.parse(
+    tarEntry(
+      darwin,
+      `awskms-${version}-darwin-arm64/third_party/components.json`,
+    ),
+  )
+  const linuxComponents = JSON.parse(
+    tarEntry(linux, `awskms-${version}-linux-x64/third_party/components.json`),
+  )
+  assert.ok(darwinComponents.components.every(({ targets }) => targets !== 'linux'))
+  assert.ok(linuxComponents.components.every(({ targets }) => targets !== 'darwin'))
+})
+
+test('shell release verification accepts the generated five-archive payload', (t) => {
+  const fixture = makeReleaseFixture()
+  t.after(() => rmSync(fixture.directory, { force: true, recursive: true }))
+  execFileSync(
+    join(repository, 'scripts', 'ci-verify-release.sh'),
+    [fixture.artifacts, fixtureVersion],
+    { cwd: repository },
   )
 })
 
@@ -230,6 +356,64 @@ test('release assembly emits the exact twelve-file payload from unchanged archiv
     const manifest = JSON.parse(tarEntry(satellite, 'package/package.json'))
     assert.equal(manifest.name, `@keyobject/aws-kms-${target.name}`)
     assert.equal(manifest.version, fixtureVersion)
+
+    const sourceComponents = JSON.parse(
+      readFileSync(join(fixture.root, 'third_party', 'components.json'), 'utf8'),
+    )
+    const expectedComponents = sourceComponents.components.filter(
+      (component) => component.targets === 'all' || component.targets === target.os,
+    )
+    const archiveComponents = JSON.parse(
+      tarEntry(archive, `${top}/third_party/components.json`),
+    )
+    const satelliteComponents = JSON.parse(
+      tarEntry(satellite, 'package/third_party/components.json'),
+    )
+    assert.deepEqual(archiveComponents, {
+      ...sourceComponents,
+      components: expectedComponents,
+    })
+    assert.deepEqual(satelliteComponents, archiveComponents)
+
+    const expectedLegalNames = referencedLegalFiles(expectedComponents)
+    const archiveLegalNames = tarEntries(archive)
+      .filter(
+        (entry) =>
+          entry.startsWith(`${top}/third_party/licenses/`) && !entry.endsWith('/'),
+      )
+      .map((entry) => basename(entry))
+      .sort()
+    const satelliteLegalNames = tarEntries(satellite)
+      .filter(
+        (entry) =>
+          entry.startsWith('package/third_party/licenses/') && !entry.endsWith('/'),
+      )
+      .map((entry) => basename(entry))
+      .sort()
+    assert.deepEqual(archiveLegalNames, expectedLegalNames)
+    assert.deepEqual(satelliteLegalNames, expectedLegalNames)
+    for (const name of [
+      'cJSON-MIT.txt',
+      'libcbor-MIT.txt',
+      'tinyxml2-zlib.txt',
+      'xxHash-BSD-2-Clause.txt',
+    ]) {
+      assert.ok(expectedLegalNames.includes(name), `${target.name} is missing ${name}`)
+    }
+
+    if (target.os === 'darwin') {
+      assert.ok(expectedLegalNames.includes('APSL-2.0.txt'))
+      assert.ok(expectedLegalNames.includes('Apple-CommonCrypto-SPI-NOTICE.txt'))
+      assert.ok(!expectedLegalNames.includes('GPL-3.0.txt'))
+      assert.ok(!expectedLegalNames.includes('GCC-RUNTIME-LIBRARY-EXCEPTION-3.1.txt'))
+      assert.ok(archiveComponents.components.every(({ targets }) => targets !== 'linux'))
+    } else {
+      assert.ok(expectedLegalNames.includes('GPL-3.0.txt'))
+      assert.ok(expectedLegalNames.includes('GCC-RUNTIME-LIBRARY-EXCEPTION-3.1.txt'))
+      assert.ok(!expectedLegalNames.includes('APSL-2.0.txt'))
+      assert.ok(!expectedLegalNames.includes('Apple-CommonCrypto-SPI-NOTICE.txt'))
+      assert.ok(archiveComponents.components.every(({ targets }) => targets !== 'darwin'))
+    }
   }
 })
 
@@ -296,6 +480,36 @@ for (const [description, mutate, expected] of [
         overrides: { files: { LICENSE: 'foreign license\n' } },
       }),
     /LICENSE differs from the authoritative source/u,
+  ],
+  [
+    'missing target license',
+    (fixture) =>
+      replaceArchive(fixture, 'darwin-arm64', {
+        overrides: { removeFiles: ['third_party/licenses/Apache-2.0.txt'] },
+      }),
+    /unexpected or duplicate file inventory/u,
+  ],
+  [
+    'unexpected target license',
+    (fixture) =>
+      replaceArchive(fixture, 'darwin-arm64', {
+        overrides: {
+          files: {
+            'third_party/licenses/GPL-3.0.txt': readFileSync(
+              join(fixture.root, 'third_party', 'licenses', 'GPL-3.0.txt'),
+            ),
+          },
+        },
+      }),
+    /unexpected or duplicate file inventory/u,
+  ],
+  [
+    'altered target license',
+    (fixture) =>
+      replaceArchive(fixture, 'linux-x64', {
+        overrides: { files: { 'third_party/licenses/Apache-2.0.txt': 'foreign text\n' } },
+      }),
+    /Apache-2\.0\.txt differs from the authoritative source/u,
   ],
   [
     'altered component graph',
