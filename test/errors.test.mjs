@@ -16,7 +16,7 @@
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +32,7 @@ import { isReal } from './real-keys.mjs';
 const load = (label) => createPrivateKey({ key: new URL(uri('test', label)) });
 const faulty = (marker, spec) =>
   createPrivateKey({ key: new URL(`aws-kms:key-id=alias/${marker}-${spec}`) });
+const cnf = process.env.AWSKMS_CNF;
 
 /* Fault injection is a property of the stubs. Against real KMS there is nothing
  * to inject into, and a real account will never return these. */
@@ -147,6 +148,48 @@ describe('KMS exceptions map to distinct error codes', { skip: needsHttpStub }, 
       code: 'ERR_OSSL_AWSKMS_SIGN_FAILED',
     });
   });
+
+  test('AWS error details are written only when diagnostics are enabled', async () => {
+    assert.ok(cnf);
+    const run = (enabled) =>
+      new Promise((resolve, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            `--openssl-config=${cnf}`,
+            '-e',
+            `try {
+              require('node:crypto').createPrivateKey({
+                key: new URL('aws-kms:key-id=alias/fault-err-KeyUnavailableException-RSA_2048'),
+              });
+            } catch { process.exitCode = 1; }`,
+          ],
+          {
+            env: { ...process.env, AWSKMS_AWS_LOG_ERRORS: enabled },
+            stdio: ['ignore', 'ignore', 'pipe'],
+          },
+        );
+        child.stderr.setEncoding('utf8');
+        let stderr = '';
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk;
+        });
+        child.once('error', reject);
+        child.once('exit', (status) => resolve({ status, stderr }));
+      });
+
+    const enabled = await run('1');
+    assert.notEqual(enabled.status, 0);
+    assert.match(
+      enabled.stderr,
+      /aws-kms AWS SDK error during kms:GetPublicKey: KeyUnavailableException: stub: injected KeyUnavailableException/,
+    );
+    assert.doesNotMatch(enabled.stderr, /fault-err-/);
+
+    const disabled = await run('0');
+    assert.notEqual(disabled.status, 0);
+    assert.equal(disabled.stderr, '');
+  });
 });
 
 describe('a key that is not for signing', { skip: needsHttpStub }, () => {
@@ -216,7 +259,6 @@ describe('RSA padding modes KMS cannot honour', () => {
  * Skipped where the CLI cannot load the provider, which is host-dependent.
  */
 const cliOpenssl = process.env.AWSKMS_OPENSSL ?? 'openssl';
-const cnf = process.env.AWSKMS_CNF;
 
 function pkeyutlSign(inputBytes) {
   const dir = mkdtempSync(join(tmpdir(), 'awskms-prehash-'));

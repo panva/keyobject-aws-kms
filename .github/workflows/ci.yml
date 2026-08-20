@@ -714,8 +714,30 @@ jobs:
           export AWS_ACCESS_KEY_ID; AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<<"$credentials")
           export AWS_SECRET_ACCESS_KEY; AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<<"$credentials")
           export AWS_SESSION_TOKEN; AWS_SESSION_TOKEN=$(jq -r .SessionToken <<<"$credentials")
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+          echo "::add-mask::$AWS_SESSION_TOKEN"
+          probe_key=$(jq -er \
+            '.keys["test-RSA_2048"].arn | select(type == "string" and length > 0)' \
+            build/real-kms-keys.json)
+          AWS_PAGER='' aws kms get-public-key \
+            --key-id "$probe_key" \
+            --region "$AWS_REGION" \
+            --endpoint-url "https://kms-fips.$AWS_REGION.amazonaws.com" \
+            --no-cli-pager \
+            --query KeyUsage --output text | grep -Fx SIGN_VERIFY
           node --openssl-config="$AWSKMS_CNF" -e \
             'require("node:assert/strict").equal(require("node:crypto").getFips(), 1)'
+          AWSKMS_AWS_LOG_ERRORS=1 AWSKMS_PROBE_KEY="$probe_key" \
+            node --openssl-config="$AWSKMS_CNF" -e '
+              const assert = require("node:assert/strict");
+              const { createPrivateKey, getFips } = require("node:crypto");
+              assert.equal(getFips(), 1);
+              const key = createPrivateKey({
+                key: new URL("aws-kms:key-id=" + process.env.AWSKMS_PROBE_KEY),
+              });
+              assert.equal(key.type, "private");
+            '
           AWSKMS_TEST_REAL=1 node test/run.mjs 2>&1 | tee "$RUNNER_TEMP/real-fips.log"
           for suite in \
             'RSA_2048 signing' \

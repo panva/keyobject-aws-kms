@@ -337,3 +337,13 @@ Grant the application only `kms:GetPublicKey` and `kms:Sign` on the intended
 key ARNs. The provider does not need `kms:Verify`, `kms:DescribeKey`, decryption,
 or key-administration permissions. KMS key policies must also permit the chosen
 principal.
+
+## AWS error diagnostics
+
+Node exposes the provider's stable OpenSSL error code, but not the detailed AWS
+SDK exception attached to that error. To diagnose a connection, endpoint, or
+service failure, set `AWSKMS_AWS_LOG_ERRORS=1` before the process starts. The
+provider then writes the AWS exception name and message to standard error for
+failed KMS calls. The text is made single-line but can contain AWS resource,
+account, and endpoint details; handle it as operational log data. Leave the
+flag unset during normal operation.

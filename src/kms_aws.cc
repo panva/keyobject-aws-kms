@@ -31,11 +31,15 @@
 #include <aws/kms/model/GetPublicKeyRequest.h>
 #include <aws/kms/model/SignRequest.h>
 
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <list>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 extern "C" {
@@ -349,10 +353,48 @@ uint32_t reason_for(const Aws::KMS::KMSError &err) {
   }
 }
 
+bool aws_error_logging_enabled() noexcept {
+  static const bool enabled = []() noexcept {
+    const char *value = std::getenv("AWSKMS_AWS_LOG_ERRORS");
+    return value != nullptr && strcmp(value, "1") == 0;
+  }();
+  return enabled;
+}
+
+std::string log_safe(std::string_view input) {
+  static constexpr size_t kMaxInputBytes = 4096;
+  static constexpr char kHex[] = "0123456789abcdef";
+  const size_t length = std::min(input.size(), kMaxInputBytes);
+  std::string output;
+  output.reserve(length);
+  for (size_t index = 0; index < length; index++) {
+    const unsigned char byte = static_cast<unsigned char>(input[index]);
+    if (byte < 0x20 || byte == 0x7f) {
+      output.append("\\x");
+      output.push_back(kHex[byte >> 4]);
+      output.push_back(kHex[byte & 0x0f]);
+    } else {
+      output.push_back(input[index]);
+    }
+  }
+  if (length != input.size()) output.append("...");
+  return output;
+}
+
 void raise_kms(const AWSKMS_PROV_CTX *provctx, const Aws::KMS::KMSError &err,
                uint32_t fallback, const char *what, const char *key_id) {
   uint32_t reason = reason_for(err);
   if (reason == 0) reason = fallback;
+  /* Node exposes the stable reason string but drops OpenSSL's attached detail.
+   * Keep production silent; this opt-in diagnostic makes the AWS SDK exception
+   * visible when investigating transport, endpoint, or service failures. */
+  if (aws_error_logging_enabled()) {
+    const std::string exception = log_safe(err.GetExceptionName().c_str());
+    const std::string message = log_safe(err.GetMessage().c_str());
+    std::fprintf(stderr, "aws-kms AWS SDK error during %s: %s: %s\n", what,
+                 exception.c_str(), message.c_str());
+    std::fflush(stderr);
+  }
   /* One error, at the point of failure: Node peeks the newest on the STORE path
    * and the oldest on sign, so exactly one is what surfaces cleanly on both. */
   awskms_err_raise(provctx->handle, reason, OPENSSL_FILE, OPENSSL_LINE,
