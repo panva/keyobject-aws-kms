@@ -434,12 +434,14 @@ function privateFileSnapshot(path, bytes, finalMode) {
 }
 
 const publicationWait = new Int32Array(new SharedArrayBuffer(4));
+const publicationTimeout = 5_000;
 
-function awaitPrivateFile(path, bytes, finalMode) {
+function awaitPrivateFile(path, bytes, finalMode, deadline) {
   /* O_EXCL makes a file visible before its creator finishes writing it. The
    * creator keeps mode 0600 until the bytes are fsynced; other isolates wait
-   * only for that private, in-progress state and then validate exact content. */
-  for (let attempt = 0; attempt < 1_000; attempt++) {
+   * only for that exact private, in-progress state and then validate content.
+   * If its creator removes a failed publication, the caller retries O_EXCL. */
+  while (performance.now() < deadline) {
     let stat;
     try {
       stat = lstatSync(path);
@@ -449,11 +451,10 @@ function awaitPrivateFile(path, bytes, finalMode) {
           'ERR_AWSKMS_TEMP_INTEGRITY', `Could not inspect private runtime file ${path}`, cause);
       }
     }
-    const pending = stat !== undefined && stat.isFile() && !stat.isSymbolicLink() &&
-      uidMatches(stat) && stat.nlink === 1 && (stat.mode & 0o777) !== finalMode;
-    if (stat !== undefined && !pending) {
-      return privateFileSnapshot(path, bytes, finalMode);
-    }
+    if (stat === undefined) return undefined;
+    const pending = stat.isFile() && !stat.isSymbolicLink() &&
+      uidMatches(stat) && stat.nlink === 1 && (stat.mode & 0o777) === 0o600;
+    if (!pending) return privateFileSnapshot(path, bytes, finalMode);
     Atomics.wait(publicationWait, 0, 0, 5);
   }
   throw awskmsError(
@@ -469,18 +470,27 @@ function writePrivateFile(name, bytes, finalMode) {
   }
   const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
     constants.O_NOFOLLOW | (constants.O_CLOEXEC ?? 0);
+  const deadline = performance.now() + publicationTimeout;
   let fd;
-  try {
-    fd = openSync(path, flags, 0o600);
-  } catch (cause) {
-    if (cause?.code === 'EEXIST') return awaitPrivateFile(path, bytes, finalMode);
-    throw awskmsError(
-      'ERR_AWSKMS_TEMP_INTEGRITY', `Could not create private runtime file ${path}`, cause);
+  let published = false;
+  while (fd === undefined) {
+    try {
+      fd = openSync(path, flags, 0o600);
+    } catch (cause) {
+      if (cause?.code === 'EEXIST') {
+        const existing = awaitPrivateFile(path, bytes, finalMode, deadline);
+        if (existing !== undefined) return existing;
+        continue;
+      }
+      throw awskmsError(
+        'ERR_AWSKMS_TEMP_INTEGRITY', `Could not create private runtime file ${path}`, cause);
+    }
   }
   try {
     writeFileSync(fd, bytes);
     fsyncSync(fd);
     fchmodSync(fd, finalMode);
+    published = true;
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
@@ -488,7 +498,9 @@ function writePrivateFile(name, bytes, finalMode) {
     if (fd !== undefined) {
       try { closeSync(fd); } catch { /* preserve the original, typed failure */ }
     }
-    try { unlinkSync(path); } catch { /* best-effort cleanup inside our private directory */ }
+    if (!published) {
+      try { unlinkSync(path); } catch { /* best-effort unpublished cleanup */ }
+    }
     throw awskmsError(
       'ERR_AWSKMS_TEMP_INTEGRITY', `Could not create private runtime file ${path}`, cause);
   }

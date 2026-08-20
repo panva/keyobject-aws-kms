@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import {
   chmodSync,
   cpSync,
@@ -15,7 +16,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -92,6 +95,31 @@ async function snapshotRuntime(coreEntry) {
     configContainsTemplateToken: configText.includes('$ENV::AWSKMS_MODULE'),
     configContainsModuleBasename: configText.includes(basename(firstModule)),
   };
+}
+
+function precreateRuntimeDirectory(tmpDirectory) {
+  const identity = `${process.pid}-${sha256(Buffer.from(
+    `${process.pid}\0${performance.timeOrigin}`,
+    'utf8',
+  ))}`;
+  const root = join(tmpDirectory, `keyobject-aws-kms-${process.getuid()}`);
+  const directory = join(root, `runtime-${identity}-ABC123`);
+  const marker = join(root, `process-${identity}.path`);
+  const config = join(directory, 'awskms.cnf');
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  chmodSync(root, 0o700);
+  mkdirSync(directory, { mode: 0o700 });
+  chmodSync(directory, 0o700);
+  writeFileSync(marker, basename(directory), { flag: 'wx', mode: 0o400 });
+  chmodSync(marker, 0o400);
+  return config;
+}
+
+function precreateRuntimeConfig(tmpDirectory, fileMode = 0o600) {
+  const config = precreateRuntimeDirectory(tmpDirectory);
+  writeFileSync(config, 'incomplete publication', { flag: 'wx', mode: 0o600 });
+  chmodSync(config, fileMode);
+  return config;
 }
 
 async function expectMutationFailure(coreEntry, mutation) {
@@ -184,6 +212,102 @@ async function childMain() {
       value = await snapshotRuntime(coreEntry);
     } else if (operation === 'snapshot') {
       value = await snapshotRuntime(coreEntry);
+    } else if (operation === 'retry-abandoned-publication') {
+      const runtime = await import(pathToFileURL(coreEntry).href);
+      const module = runtime.modulePath();
+      if (module.includes('.zip/')) {
+        throw new Error('abandoned-publication fixture requires a direct module path');
+      }
+      const pendingConfig = precreateRuntimeConfig(process.env.TMPDIR);
+      const originalLstatSync = fs.lstatSync;
+      let abandoned = false;
+      fs.lstatSync = (...args) => {
+        const stat = originalLstatSync(...args);
+        if (!abandoned && args[0] === pendingConfig) {
+          unlinkSync(pendingConfig);
+          abandoned = true;
+        }
+        return stat;
+      };
+      syncBuiltinESMExports();
+      let config;
+      try {
+        config = runtime.opensslConfigPath();
+      } finally {
+        fs.lstatSync = originalLstatSync;
+        syncBuiltinESMExports();
+      }
+      if (!abandoned) {
+        throw new Error('runtime did not inspect the abandoned publication');
+      }
+      if (config !== pendingConfig) {
+        throw new Error('runtime did not retry the abandoned publication path');
+      }
+      value = await snapshotRuntime(coreEntry);
+    } else if (operation === 'retain-published-metadata-failure') {
+      const runtime = await import(pathToFileURL(coreEntry).href);
+      const module = runtime.modulePath();
+      if (module.includes('.zip/')) {
+        throw new Error('metadata-failure fixture requires a direct module path');
+      }
+      const expectedConfig = precreateRuntimeDirectory(process.env.TMPDIR);
+      const originalFsyncSync = fs.fsyncSync;
+      const originalOpenSync = fs.openSync;
+      let configFd;
+      let configSyncs = 0;
+      let injected = false;
+      fs.openSync = (...args) => {
+        const fd = originalOpenSync(...args);
+        if (args[0] === expectedConfig) configFd = fd;
+        return fd;
+      };
+      fs.fsyncSync = (fd) => {
+        if (fd === configFd && ++configSyncs === 2) {
+          injected = true;
+          const error = new Error('injected metadata sync failure after publication');
+          error.code = 'EIO';
+          throw error;
+        }
+        return originalFsyncSync(fd);
+      };
+      syncBuiltinESMExports();
+      let failure;
+      try {
+        runtime.opensslConfigPath();
+      } catch (error) {
+        failure = serialiseError(error);
+      } finally {
+        fs.openSync = originalOpenSync;
+        fs.fsyncSync = originalFsyncSync;
+        syncBuiltinESMExports();
+      }
+      if (!injected || failure === undefined) {
+        throw new Error('runtime did not surface the injected metadata sync failure');
+      }
+      let publishedInode;
+      try {
+        publishedInode = lstatSync(expectedConfig).ino;
+      } catch (cause) {
+        throw new Error('runtime removed the completed publication', { cause });
+      }
+      const config = runtime.opensslConfigPath();
+      if (config !== expectedConfig) {
+        throw new Error('runtime did not retain the completed publication');
+      }
+      if (lstatSync(config).ino !== publishedInode) {
+        throw new Error('runtime replaced the completed publication');
+      }
+      value = { failure, snapshot: await snapshotRuntime(coreEntry) };
+    } else if (operation === 'reject-invalid-publication-mode') {
+      const runtime = await import(pathToFileURL(coreEntry).href);
+      runtime.modulePath();
+      precreateRuntimeConfig(process.env.TMPDIR, 0o601);
+      try {
+        runtime.opensslConfigPath();
+        value = { code: 'SILENT' };
+      } catch (error) {
+        value = serialiseError(error);
+      }
     } else if (operation === 'worker-batch') {
       value = await Promise.all(Array.from(
         { length: 32 },
@@ -538,6 +662,39 @@ if (!isMainThread && workerData?.awskmsTempWorker) {
         }),
         'reported-before-hang',
       );
+    });
+
+    await t.test('recovers only from an exact abandoned publication state', async () => {
+      const abandonedTmp = join(runRoot, 'abandoned-publication');
+      const metadataFailureTmp = join(runRoot, 'published-metadata-failure');
+      const invalidTmp = join(runRoot, 'invalid-publication');
+      mkdirSync(abandonedTmp, { mode: 0o700 });
+      mkdirSync(metadataFailureTmp, { mode: 0o700 });
+      mkdirSync(invalidTmp, { mode: 0o700 });
+      const recovered = await runChild(
+        'retry-abandoned-publication',
+        coreEntry,
+        abandonedTmp,
+      );
+      assertRuntimeSnapshot(recovered, abandonedTmp);
+
+      const retained = await runChild(
+        'retain-published-metadata-failure',
+        coreEntry,
+        metadataFailureTmp,
+      );
+      assert.equal(retained.failure.code, 'ERR_AWSKMS_TEMP_INTEGRITY');
+      assert.match(retained.failure.message, /Could not create private runtime file/u);
+      assertRuntimeSnapshot(retained.snapshot, metadataFailureTmp);
+
+      const rejected = await runChild(
+        'reject-invalid-publication-mode',
+        coreEntry,
+        invalidTmp,
+      );
+      assert.equal(rejected.code, 'ERR_AWSKMS_TEMP_INTEGRITY');
+      assert.match(rejected.message, /Private runtime file changed after creation/u);
+      assert.doesNotMatch(rejected.message, /Timed out waiting/u);
     });
 
     await t.test('ignores precreated PID paths, symlinks, files, and sentinels', async () => {
