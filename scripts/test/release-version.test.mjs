@@ -271,6 +271,36 @@ test('normalizes linked release headings without changing subsections', (t) => {
   );
 });
 
+test('separates adjacent linked and unlinked release headings', (t) => {
+  const root = useFixture(t);
+  const contents = [
+    '# Changelog',
+    '',
+    '## [1.2.3](https://example.test/v1.2.3) (2026-08-20)',
+    '',
+    '### Fixes',
+    '',
+    '* newest fix',
+    '## [1.2.2](https://example.test/v1.2.2) (2026-08-19)',
+    '',
+    '### Features',
+    '',
+    '* older feature',
+    '## 1.0.0 (2026-08-18)',
+    '',
+  ].join('\n');
+  const expected = contents
+    .replace('* newest fix\n## [1.2.2]', '* newest fix\n\n## [1.2.2]')
+    .replace('* older feature\n## 1.0.0', '* older feature\n\n## 1.0.0');
+  writeFileSync(join(root, 'CHANGELOG.md'), contents);
+
+  normalizeChangelog({ root });
+
+  assert.equal(readFileSync(join(root, 'CHANGELOG.md'), 'utf8'), expected);
+  normalizeChangelog({ root });
+  assert.equal(readFileSync(join(root, 'CHANGELOG.md'), 'utf8'), expected);
+});
+
 test('removes only the duplicated initial header from the first release', (t) => {
   const root = useFixture(t);
   const header = [

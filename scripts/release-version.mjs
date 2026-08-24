@@ -223,7 +223,9 @@ export function syncReleaseVersion({ root = defaultRoot, stage = false } = {}) {
 export function normalizeChangelog({ root = defaultRoot } = {}) {
   const path = join(root, changelog);
   const contents = read(root, changelog);
-  let normalized = contents.replace(/^### \[/gm, '## [');
+  let normalized = contents
+    .replace(/^### \[/gm, '## [')
+    .replace(/([^\n])\n(?=## \[?\d+\.\d+\.\d+)/g, '$1\n\n');
 
   // On the first release commit-and-tag-version has no release heading from
   // which to slice the old changelog body, so it appends the initial header a

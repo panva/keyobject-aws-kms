@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file. See [commit
 ### Fixes
 
 * recover abandoned runtime file publications ([27208b7](https://github.com/panva/keyobject-aws-kms/commit/27208b774f68cd40e53da8d41c596cffc64500ea))
+
 ## 0.0.1 (2026-08-20)
 
 ### Features
