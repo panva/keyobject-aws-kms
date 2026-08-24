@@ -935,9 +935,9 @@ grep -Fq '      full_matrix: true' "$release_workflow" ||
   fail 'release workflow does not require the full KeySpec matrix'
 grep -Fq 'npm@12.0.2' "$release_workflow" ||
   fail 'release workflow does not pin npm 12.0.2'
-shared_release_action='panva/.github/.github/actions/npm-release@main'
+shared_release_action='panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58'
 [[ $(grep -Fc "uses: $shared_release_action" "$release_workflow") -eq 5 ]] ||
-  fail 'release workflow must invoke the shared action directly from main'
+  fail 'release workflow must pin every shared release action invocation'
 if grep -Eq 'repository: panva/\.github|node_modules/\.panva-release' \
   "$release_workflow"; then
   fail 'release workflow must not clone the shared action repository'

@@ -26,7 +26,7 @@ jobs:
         with:
           node-version-file: .node-version
       - name: Verify the remote tag and changelog
-        uses: panva/.github/.github/actions/npm-release@main
+        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
         with:
           operation: preflight
           manifest_directory: npm/core
@@ -165,7 +165,7 @@ jobs:
       - name: Stage the exact package artifact
         id: stage
         continue-on-error: true
-        uses: panva/.github/.github/actions/npm-release@main
+        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
         with:
           operation: stage
           tarball: ${{ steps.package.outputs.tarball }}
@@ -197,7 +197,7 @@ jobs:
           name: release-payload
           path: ${{ runner.temp }}/release
       - name: Recheck the remote release tag
-        uses: panva/.github/.github/actions/npm-release@main
+        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
         with:
           operation: verify-tag
           manifest_directory: npm/core
@@ -222,7 +222,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Integrate the release commit
-        uses: panva/.github/.github/actions/npm-release@main
+        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
         with:
           operation: integrate
           manifest_directory: npm/core
@@ -248,7 +248,7 @@ jobs:
           name: release-payload
           path: ${{ runner.temp }}/release
       - name: Recheck the remote release tag
-        uses: panva/.github/.github/actions/npm-release@main
+        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
         with:
           operation: verify-tag
           manifest_directory: npm/core
