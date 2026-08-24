@@ -1,0 +1,8 @@
+{
+  "name": "@keyobject/aws-kms-property-tests",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "fast-check": "^4.9.0"
+  }
+}
