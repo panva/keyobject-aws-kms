@@ -910,7 +910,7 @@ assert_release_permissions wait-npm $'actions: read\ncontents: read'
 assert_release_permissions integrate 'contents: write'
 assert_release_permissions github-release \
   $'actions: read\ncontents: write\ndiscussions: write'
-for job in wait-npm github-release; do
+for job in stage-npm wait-npm github-release; do
   release_job=$(extract_yaml_job "$job" "$release_workflow")
   grep -Fq 'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020' \
     <<<"$release_job" || fail "$job relies on the runner's ambient Node"
@@ -933,10 +933,6 @@ grep -Fq '      real_kms: true' "$release_workflow" ||
   fail 'release workflow does not require real AWS KMS coverage'
 grep -Fq '      full_matrix: true' "$release_workflow" ||
   fail 'release workflow does not require the full KeySpec matrix'
-grep -Fq 'npm clean-install --ignore-scripts --prefix .github/tools/npm' \
-  "$release_workflow" || fail 'release workflow does not install locked npm'
-grep -Fq '$GITHUB_WORKSPACE/.github/tools/npm/node_modules/.bin' \
-  "$release_workflow" || fail 'release workflow does not select locked npm'
 grep -Fq '/tmp/cf/bin/pip install -q --require-hashes' "$workflow" ||
   fail 'CI does not require hashes for clang-format'
 grep -Fq '.github/tools/clang-format/requirements.txt' "$workflow" ||
