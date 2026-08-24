@@ -769,7 +769,8 @@ jobs:
       - name: clang-format
         run: |
           python3 -m venv /tmp/cf
-          /tmp/cf/bin/pip install -q clang-format==22.1.8
+          /tmp/cf/bin/pip install -q --require-hashes \
+            -r .github/tools/clang-format/requirements.txt
           /tmp/cf/bin/clang-format --dry-run --Werror \
             src/*.c src/*.h src/*.cc test/unit_*.c test/unit.h
       - name: shell and Python syntax

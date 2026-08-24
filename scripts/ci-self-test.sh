@@ -933,8 +933,14 @@ grep -Fq '      real_kms: true' "$release_workflow" ||
   fail 'release workflow does not require real AWS KMS coverage'
 grep -Fq '      full_matrix: true' "$release_workflow" ||
   fail 'release workflow does not require the full KeySpec matrix'
-grep -Fq 'npm@12.0.2' "$release_workflow" ||
-  fail 'release workflow does not pin npm 12.0.2'
+grep -Fq 'npm clean-install --ignore-scripts --prefix .github/tools/npm' \
+  "$release_workflow" || fail 'release workflow does not install locked npm'
+grep -Fq '$GITHUB_WORKSPACE/.github/tools/npm/node_modules/.bin' \
+  "$release_workflow" || fail 'release workflow does not select locked npm'
+grep -Fq '/tmp/cf/bin/pip install -q --require-hashes' "$workflow" ||
+  fail 'CI does not require hashes for clang-format'
+grep -Fq '.github/tools/clang-format/requirements.txt' "$workflow" ||
+  fail 'CI does not install clang-format from its locked requirements'
 shared_release_action='panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58'
 [[ $(grep -Fc "uses: $shared_release_action" "$release_workflow") -eq 5 ]] ||
   fail 'release workflow must pin every shared release action invocation'
