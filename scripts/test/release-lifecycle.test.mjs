@@ -21,6 +21,8 @@ import {
   inspectPayload,
   publishGithubRelease,
   requireDiscussionCategory,
+  reuseAttestationBundle,
+  stageAttestationBundle,
   waitForNpm,
 } from '../release-lifecycle.mjs';
 
@@ -60,17 +62,49 @@ function makeTarball(directory, manifest) {
 }
 
 function refreshChecksums(directory) {
-  const files = expectedPayload(version).filter((name) => name !== 'SHA256SUMS');
+  const files = expectedPayload(version, { attested: false })
+    .filter((name) => name !== 'SHA256SUMS');
   writeFileSync(
     join(directory, 'SHA256SUMS'),
     `${files.map((name) => `${digest('sha256', join(directory, name))}  ${name}`).join('\n')}\n`,
   );
 }
 
+function attestationBundle(directory) {
+  const subjects = expectedPayload(version, { attested: false })
+    .filter((name) => name !== 'SHA256SUMS')
+    .map((name) => ({
+      name,
+      digest: { sha256: digest('sha256', join(directory, name)) },
+    }));
+  const statement = {
+    _type: 'https://in-toto.io/Statement/v1',
+    subject: subjects,
+    predicateType: 'https://slsa.dev/provenance/v1',
+    predicate: {},
+  };
+  return {
+    mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json',
+    dsseEnvelope: {
+      payload: Buffer.from(JSON.stringify(statement)).toString('base64'),
+      payloadType: 'application/vnd.in-toto+json',
+      signatures: [{ sig: 'fixture' }],
+    },
+    verificationMaterial: { fixture: true },
+  };
+}
+
+function refreshAttestation(directory) {
+  writeFileSync(
+    join(directory, 'release-payload.sigstore.json'),
+    `${JSON.stringify(attestationBundle(directory))}\n`,
+  );
+}
+
 function payload(t) {
   const directory = mkdtempSync(join(tmpdir(), 'awskms-release-payload-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  for (const name of expectedPayload(version)) {
+  for (const name of expectedPayload(version, { attested: false })) {
     if (name.endsWith('.tar.gz')) writeFileSync(join(directory, name), name);
   }
   const optionalDependencies = Object.fromEntries(
@@ -84,6 +118,7 @@ function payload(t) {
     });
   }
   refreshChecksums(directory);
+  refreshAttestation(directory);
   return directory;
 }
 
@@ -101,7 +136,7 @@ function packageFromUrl(url) {
   return decodeURIComponent(new URL(url).pathname.split('/').at(-2));
 }
 
-test('requires an exact twelve-file payload and checksum inventory', (t) => {
+test('requires an exact thirteen-file payload and checksum inventory', (t) => {
   const directory = payload(t);
   assert.deepEqual(readdirSync(directory).sort(), expectedPayload(version));
   assert.equal(inspectPayload(directory, version).packages.length, 6);
@@ -111,6 +146,49 @@ test('requires an exact twelve-file payload and checksum inventory', (t) => {
     () => inspectPayload(directory, version),
     /release payload inventory mismatch/,
   );
+});
+
+test('requires the attestation bundle to cover every exact tarball', (t) => {
+  const directory = payload(t);
+  const path = join(directory, 'release-payload.sigstore.json');
+  const bundle = JSON.parse(readFileSync(path, 'utf8'));
+  const statement = JSON.parse(
+    Buffer.from(bundle.dsseEnvelope.payload, 'base64').toString('utf8'),
+  );
+  statement.subject[0].digest.sha256 = '0'.repeat(64);
+  bundle.dsseEnvelope.payload = Buffer.from(JSON.stringify(statement)).toString(
+    'base64',
+  );
+  writeFileSync(path, `${JSON.stringify(bundle)}\n`);
+
+  assert.throws(
+    () => inspectPayload(directory, version),
+    /attestation bundle subjects do not match/,
+  );
+});
+
+test('stages and reuses the exact multi-subject bundle', (t) => {
+  const previous = payload(t);
+  const current = payload(t);
+  const sourceDirectory = mkdtempSync(join(tmpdir(), 'awskms-bundle-source-'));
+  const source = join(sourceDirectory, 'attestation.json');
+  t.after(() => rmSync(sourceDirectory, { recursive: true, force: true }));
+  copyFileSync(join(current, 'release-payload.sigstore.json'), source);
+  rmSync(join(current, 'release-payload.sigstore.json'));
+
+  assert.equal(
+    stageAttestationBundle(current, source, version),
+    join(current, 'release-payload.sigstore.json'),
+  );
+  assert.doesNotThrow(() => inspectPayload(current, version));
+
+  const retry = mkdtempSync(join(tmpdir(), 'awskms-release-retry-'));
+  t.after(() => rmSync(retry, { recursive: true, force: true }));
+  for (const name of expectedPayload(version, { attested: false })) {
+    copyFileSync(join(previous, name), join(retry, name));
+  }
+  reuseAttestationBundle(previous, retry, version);
+  assert.doesNotThrow(() => comparePayloads(previous, retry, version));
 });
 
 test('waits once, fetches each poll concurrently, and verifies all integrities', async (t) => {
@@ -292,7 +370,7 @@ test('allows no prior payload but rejects ambiguous prior artifacts', () => {
   );
 });
 
-test('locks all twelve payload files to the first successful attempt', (t) => {
+test('locks all thirteen payload files to the first successful attempt', (t) => {
   const previous = payload(t);
   const current = mkdtempSync(join(tmpdir(), 'awskms-release-current-'));
   t.after(() => rmSync(current, { recursive: true, force: true }));
@@ -304,6 +382,7 @@ test('locks all twelve payload files to the first successful attempt', (t) => {
     'different but independently checksummed bytes',
   );
   refreshChecksums(current);
+  refreshAttestation(current);
   assert.throws(
     () => comparePayloads(previous, current, version),
     /release payload changed across run attempts: SHA256SUMS.*linux-x64/,
@@ -358,7 +437,11 @@ test('uploads, re-downloads, verifies, then publishes a new GitHub Release', (t)
   assert.ok(edit.includes('--draft=false'));
   assert.ok(edit.includes('Releases'));
   const upload = calls.find((args) => args[1] === 'upload');
-  assert.equal(upload.filter((entry) => expectedPayload(version).includes(basename(entry))).length, 12);
+  assert.equal(
+    upload.filter((entry) => expectedPayload(version).includes(basename(entry)))
+      .length,
+    13,
+  );
 });
 
 test('does not publish a draft whose downloaded asset bytes differ', (t) => {
@@ -375,7 +458,7 @@ test('does not publish a draft whose downloaded asset bytes differ', (t) => {
     }
     if (args[1] === 'download') {
       copyPayload(directory, args[args.indexOf('--dir') + 1], {
-        corrupt: 'SHA256SUMS',
+        corrupt: 'release-payload.sigstore.json',
       });
     }
     return { status: 0, stdout: '', stderr: '' };
@@ -388,7 +471,7 @@ test('does not publish a draft whose downloaded asset bytes differ', (t) => {
       changelog: `## ${version} (2026-08-20)\n\nNotes.\n`,
       run,
     }),
-    /different SHA256SUMS/,
+    /different release-payload\.sigstore\.json/,
   );
   assert.equal(calls.some((args) => args[1] === 'edit'), false);
 });
@@ -467,7 +550,7 @@ test('rejects a published GitHub Release with a missing asset', (t) => {
   );
 });
 
-test('accepts an already-published release only when all twelve bytes match', (t) => {
+test('accepts an already-published release only when all thirteen bytes match', (t) => {
   const directory = payload(t);
   const calls = [];
   const run = (command, args) => {

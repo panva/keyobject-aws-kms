@@ -97,16 +97,31 @@ jobs:
       - name: Lock release bytes across run attempts
         if: steps.prior.outputs.found == 'true'
         run: |
-          node scripts/release-lifecycle.mjs validate-payload \
+          node scripts/release-lifecycle.mjs validate-attested-payload \
             --payload prior-release
+          node scripts/release-lifecycle.mjs reuse-attestation \
+            --previous prior-release --current dist
           node scripts/release-lifecycle.mjs compare-payloads \
             --previous prior-release --current dist
       - name: Attest all eleven tarballs
-        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        if: steps.prior.outputs.found != 'true'
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             dist/*.tar.gz
             dist/*.tgz
+      - name: Stage the multi-subject Sigstore bundle
+        if: steps.prior.outputs.found != 'true'
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: >-
+          node scripts/release-lifecycle.mjs stage-attestation
+          --payload dist --bundle "$ATTESTATION_BUNDLE"
+      - name: Validate the attested release payload
+        run: >-
+          node scripts/release-lifecycle.mjs validate-attested-payload
+          --payload dist
       - name: Upload the exact release payload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -119,6 +134,7 @@ jobs:
             dist/*.tar.gz
             dist/*.tgz
             dist/SHA256SUMS
+            dist/release-payload.sigstore.json
 
   stage-npm:
     name: Stage ${{ matrix.package }}

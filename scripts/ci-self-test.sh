@@ -944,12 +944,18 @@ if grep -Eq 'repository: panva/\.github|node_modules/\.panva-release' \
 fi
 [[ $(grep -Fc "          - '@keyobject/aws-kms" "$release_workflow") -eq 6 ]] ||
   fail 'release workflow must stage exactly the core and five satellite packages'
-grep -Fq 'actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d' \
+grep -Fq 'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6' \
   "$release_workflow" || fail 'release attestations are not immutably pinned'
 grep -Fq '            dist/*.tar.gz' "$release_workflow" ||
   fail 'native archives are not attested'
 grep -Fq '            dist/*.tgz' "$release_workflow" ||
   fail 'npm tarballs are not attested'
+grep -Fq '          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}' \
+  "$release_workflow" || fail 'the generated Sigstore bundle is not preserved'
+grep -Fq '          --payload dist --bundle "$ATTESTATION_BUNDLE"' \
+  "$release_workflow" || fail 'the multi-subject bundle is not staged'
+grep -Fq '            dist/release-payload.sigstore.json' \
+  "$release_workflow" || fail 'the Sigstore bundle is not uploaded'
 grep -Fq '          retention-days: 30' "$release_workflow" ||
   fail 'release payload does not have the required retry lifetime'
 grep -Fq '          name: release-payload' "$release_workflow" ||
@@ -960,6 +966,10 @@ grep -Fq '          run-id: ${{ github.run_id }}' "$release_workflow" ||
   fail 'prior release payload download is not scoped to the current workflow run'
 grep -Fq 'node scripts/release-lifecycle.mjs compare-payloads' \
   "$release_workflow" || fail 'release bytes are not locked across run attempts'
+grep -Fq 'node scripts/release-lifecycle.mjs reuse-attestation' \
+  "$release_workflow" || fail 'release retries do not reuse their attestation'
+grep -Fq 'node scripts/release-lifecycle.mjs validate-attested-payload' \
+  "$release_workflow" || fail 'the complete attested payload is not validated'
 grep -Fq '          overwrite: true' "$release_workflow" ||
   fail 'an identical prior release payload cannot be replaced after validation'
 grep -Fq 'actions/runs/${runId}/artifacts?per_page=100' \
@@ -970,9 +980,11 @@ prior_line=$(grep -n -F 'artifact-ids: ${{ steps.prior.outputs.id }}' \
 lock_line=$(grep -n -F 'node scripts/release-lifecycle.mjs compare-payloads' \
   "$release_workflow" | cut -d: -f1)
 attest_line=$(grep -n -F 'uses: actions/attest@' "$release_workflow" | cut -d: -f1)
+bundle_line=$(grep -n -F 'node scripts/release-lifecycle.mjs stage-attestation' \
+  "$release_workflow" | cut -d: -f1)
 overwrite_line=$(grep -n -F '          overwrite: true' "$release_workflow" | cut -d: -f1)
 [[ $prior_line -lt $lock_line && $lock_line -lt $attest_line && \
-   $attest_line -lt $overwrite_line ]] ||
+   $attest_line -lt $bundle_line && $bundle_line -lt $overwrite_line ]] ||
   fail 'prior payload equality must be proven before attestation and overwrite'
 if grep -Eq '(NPM_TOKEN|NODE_AUTH_TOKEN|npm[[:space:]]+publish|publish_jsr:[[:space:]]+true)' \
   "$release_workflow"; then

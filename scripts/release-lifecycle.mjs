@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
+  copyFileSync,
+  constants,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -158,11 +160,20 @@ function tarballName(packageName, version) {
   return `${packageName.slice(1).replace('/', '-')}-${version}.tgz`;
 }
 
-export function expectedPayload(version) {
+const attestationBundleName = 'release-payload.sigstore.json';
+
+function releaseSubjects(version) {
   return [
     ...targets.map((target) => `awskms-${version}-${target}.tar.gz`),
     ...packageNames.map((name) => tarballName(name, version)),
+  ].sort();
+}
+
+export function expectedPayload(version, { attested = true } = {}) {
+  return [
+    ...releaseSubjects(version),
     'SHA256SUMS',
+    ...(attested ? [attestationBundleName] : []),
   ].sort();
 }
 
@@ -175,9 +186,61 @@ function tarManifest(path) {
   return JSON.parse(result.stdout);
 }
 
-export function inspectPayload(directory, version = releaseVersion()) {
+function inspectAttestationBundle(path, directory, subjects) {
+  let bundle;
+  let statement;
+  try {
+    bundle = JSON.parse(readFileSync(path, 'utf8'));
+    const envelope = bundle.dsseEnvelope;
+    if (
+      !bundle.mediaType?.startsWith('application/vnd.dev.sigstore.bundle.') ||
+      envelope?.payloadType !== 'application/vnd.in-toto+json' ||
+      typeof envelope.payload !== 'string' ||
+      !Array.isArray(envelope.signatures) ||
+      envelope.signatures.length === 0 ||
+      typeof bundle.verificationMaterial !== 'object'
+    ) {
+      fail('attestation bundle is not a Sigstore in-toto DSSE bundle');
+    }
+    statement = JSON.parse(Buffer.from(envelope.payload, 'base64').toString('utf8'));
+    if (statement?._type !== 'https://in-toto.io/Statement/v1') {
+      fail('attestation bundle does not contain an in-toto v1 statement');
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('attestation bundle')) {
+      throw error;
+    }
+    fail(`attestation bundle is unreadable: ${error?.message ?? error}`);
+  }
+
+  const expected = subjects.map((name) => ({
+    name,
+    digest: sha256(join(directory, name)),
+  }));
+  const actual = Array.isArray(statement.subject)
+    ? statement.subject.map(({ name, digest }) => ({
+        name,
+        digest: digest?.sha256,
+      }))
+    : undefined;
+  if (
+    !Array.isArray(actual) ||
+    actual.some(({ name, digest }) =>
+      typeof name !== 'string' || typeof digest !== 'string') ||
+    JSON.stringify(actual.sort((left, right) => left.name.localeCompare(right.name))) !==
+      JSON.stringify(expected)
+  ) {
+    fail('attestation bundle subjects do not match the eleven release tarballs');
+  }
+}
+
+export function inspectPayload(
+  directory,
+  version = releaseVersion(),
+  { attested = true } = {},
+) {
   const actual = readdirSync(directory).sort();
-  const expected = expectedPayload(version);
+  const expected = expectedPayload(version, { attested });
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     fail(`release payload inventory mismatch: expected ${expected.join(', ')}`);
   }
@@ -203,20 +266,64 @@ export function inspectPayload(directory, version = releaseVersion()) {
     fail('the packed core optionalDependencies do not match all five satellites');
   }
 
-  const subjects = expected.filter((name) => name !== 'SHA256SUMS');
+  const subjects = releaseSubjects(version);
   const checksums = `${subjects
     .map((name) => `${sha256(join(directory, name))}  ${name}`)
     .join('\n')}\n`;
   if (readFileSync(join(directory, 'SHA256SUMS'), 'utf8') !== checksums) {
     fail('SHA256SUMS does not exactly cover the eleven sorted tarballs');
   }
-  return { packages, subjects, version };
+  const bundle = attested ? join(directory, attestationBundleName) : undefined;
+  if (bundle !== undefined) {
+    inspectAttestationBundle(bundle, directory, subjects);
+  }
+  return { bundle, packages, subjects, version };
+}
+
+export function stageAttestationBundle(
+  directory,
+  source,
+  version = releaseVersion(),
+) {
+  const { subjects } = inspectPayload(directory, version, { attested: false });
+  inspectAttestationBundle(source, directory, subjects);
+  const destination = join(directory, attestationBundleName);
+  if (existsSync(destination)) {
+    fail(`refusing to overwrite ${attestationBundleName}`);
+  }
+  copyFileSync(source, destination);
+  inspectPayload(directory, version);
+  return destination;
+}
+
+export function reuseAttestationBundle(
+  previous,
+  current,
+  version = releaseVersion(),
+) {
+  inspectPayload(previous, version);
+  inspectPayload(current, version, { attested: false });
+  const expected = expectedPayload(version, { attested: false });
+  const changed = expected.filter(
+    (name) => !readFileSync(join(previous, name)).equals(
+      readFileSync(join(current, name)),
+    ),
+  );
+  if (changed.length !== 0) {
+    fail(`release payload changed across run attempts: ${changed.join(', ')}`);
+  }
+  copyFileSync(
+    join(previous, attestationBundleName),
+    join(current, attestationBundleName),
+    constants.COPYFILE_EXCL,
+  );
+  inspectPayload(current, version);
 }
 
 export function comparePayloads(previous, current, version = releaseVersion()) {
   inspectPayload(previous, version);
-  const { subjects } = inspectPayload(current, version);
-  const expected = [...subjects, 'SHA256SUMS'].sort();
+  inspectPayload(current, version);
+  const expected = expectedPayload(version);
   const changed = expected.filter(
     (name) => !readFileSync(join(previous, name)).equals(
       readFileSync(join(current, name)),
@@ -365,8 +472,8 @@ export function publishGithubRelease({
   tag = process.env.GITHUB_REF_NAME ?? `v${version}`,
   run = command,
 }) {
-  const { subjects } = inspectPayload(directory, version);
-  const expected = [...subjects, 'SHA256SUMS'].sort();
+  inspectPayload(directory, version);
+  const expected = expectedPayload(version);
   const notes = extractReleaseNotes(changelog, version);
   const temporary = mkdtempSync(join(tmpdir(), 'awskms-release-'));
   const notesPath = join(temporary, 'notes.md');
@@ -375,7 +482,7 @@ export function publishGithubRelease({
     const release = releaseView(tag, run);
     if (release !== undefined && !release.isDraft) {
       verifyRemoteAssets(release, tag, expected, directory, temporary, run);
-      console.log(`${tag} is already published with the exact twelve assets`);
+      console.log(`${tag} is already published with the exact release assets`);
       return;
     }
 
@@ -433,9 +540,27 @@ async function main(args = process.argv.slice(2)) {
     case 'validate-payload': {
       const payload = resolve(option(args, '--payload', 'dist'));
       command('scripts/ci-verify-release.sh', [payload, releaseVersion()]);
+      inspectPayload(payload, releaseVersion(), { attested: false });
+      break;
+    }
+    case 'validate-attested-payload': {
+      const payload = resolve(option(args, '--payload', 'dist'));
+      command('scripts/ci-verify-release.sh', [payload, releaseVersion()]);
       inspectPayload(payload);
       break;
     }
+    case 'stage-attestation':
+      stageAttestationBundle(
+        resolve(option(args, '--payload', 'dist')),
+        resolve(option(args, '--bundle')),
+      );
+      break;
+    case 'reuse-attestation':
+      reuseAttestationBundle(
+        resolve(option(args, '--previous')),
+        resolve(option(args, '--current')),
+      );
+      break;
     case 'compare-payloads':
       comparePayloads(
         resolve(option(args, '--previous')),
