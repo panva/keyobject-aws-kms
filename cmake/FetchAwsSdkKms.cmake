@@ -27,7 +27,7 @@
 #       and their libcrypto references stay undefined, binding to the same
 #       OpenSSL this provider uses -- exactly one per process.
 
-set(AWSKMS_AWS_SDK_TAG "1.11.855" CACHE STRING
+set(AWSKMS_AWS_SDK_TAG "1.11.883" CACHE STRING
   "aws-sdk-cpp tag to fetch when AWSKMS_AWS_SDK=FETCH")
 
 function(_awskms_git)
