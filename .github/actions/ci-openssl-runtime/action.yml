@@ -18,7 +18,9 @@ runs:
         key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
 
     - shell: bash
-      run: scripts/build-openssl.sh '${{ inputs.version }}'
+      env:
+        OPENSSL_VERSION: ${{ inputs.version }}
+      run: scripts/build-openssl.sh "$OPENSSL_VERSION"
 
     - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
       with:
@@ -37,16 +39,18 @@ runs:
 
     - name: load and exercise the registrar
       shell: bash
+      env:
+        OPENSSL_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        prefix="$HOME/.cache/awskms-openssl/${{ inputs.version }}"
+        prefix="$HOME/.cache/awskms-openssl/$OPENSSL_VERSION"
         export PATH="$prefix/bin:$PATH"
         export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
         output=$(openssl version)
         got=$(sed -n 's/.*Library: OpenSSL \([0-9][0-9.]*\).*/\1/p' <<<"$output")
         got=${got:-$(awk '{print $2}' <<<"$output")}
-        [ "$got" = '${{ inputs.version }}' ]
+        [ "$got" = "$OPENSSL_VERSION" ]
         scripts/check-symbol-floor.sh build/aws-kms.so "$prefix"
         scripts/check-load.sh build
-        if [[ '${{ inputs.version }}' == 3.0.* ]]; then expected=unsupported; else expected=supported; fi
+        if [[ "$OPENSSL_VERSION" == 3.0.* ]]; then expected=unsupported; else expected=supported; fi
         python3 scripts/ci-check-register.py build/aws-kms.so "$prefix" "$expected"

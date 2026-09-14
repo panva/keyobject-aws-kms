@@ -47,13 +47,17 @@ runs:
     - name: build and verify in pinned AlmaLinux 8
       if: inputs.phase == 'build'
       shell: bash
+      env:
+        CI_IMAGE: ${{ inputs.image }}
+        CI_BACKEND: ${{ inputs.backend }}
+        CI_ARCH: ${{ inputs.arch }}
       run: |
         set -euo pipefail
         docker run --rm -v "$PWD:/src" -w /src \
           -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
-          '${{ inputs.image }}' \
-          ./scripts/ci-alma.sh build '${{ inputs.backend }}' \
-            '${{ inputs.arch }}' '${{ env.AWSKMS_OPENSSL_FLOOR }}'
+          "$CI_IMAGE" \
+          ./scripts/ci-alma.sh build "$CI_BACKEND" \
+            "$CI_ARCH" "$AWSKMS_OPENSSL_FLOOR"
 
     - name: upload archive dry-run
       if: inputs.phase == 'build' && inputs.backend == 'aws'
@@ -89,11 +93,16 @@ runs:
     - name: capability probe and tests in pinned AlmaLinux 8
       if: inputs.phase == 'test'
       shell: bash
+      env:
+        CI_IMAGE: ${{ inputs.image }}
+        CI_BACKEND: ${{ inputs.backend }}
+        CI_ARCH: ${{ inputs.arch }}
+        CI_NODE_VERSION: ${{ inputs.node-version }}
       run: |
         set -euo pipefail
         docker run --rm -v "$PWD:/src" -w /src \
           -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
-          '${{ inputs.image }}' \
-          ./scripts/ci-alma.sh test '${{ inputs.backend }}' \
-            '${{ inputs.arch }}' '${{ inputs.node-version }}' \
-            '${{ env.AWSKMS_OPENSSL_FLOOR }}'
+          "$CI_IMAGE" \
+          ./scripts/ci-alma.sh test "$CI_BACKEND" \
+            "$CI_ARCH" "$CI_NODE_VERSION" \
+            "$AWSKMS_OPENSSL_FLOOR"

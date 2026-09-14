@@ -48,12 +48,16 @@ runs:
     - name: build in pinned Alpine 3.22.5
       if: inputs.phase == 'build'
       shell: bash
+      env:
+        CI_IMAGE: ${{ inputs.image }}
+        CI_BACKEND: ${{ inputs.backend }}
+        CI_ARCH: ${{ inputs.arch }}
       run: |
         docker run --rm -v "$PWD:/src" -w /src \
           -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
-          '${{ inputs.image }}' ./scripts/ci-alpine.sh build \
-            '${{ inputs.backend }}' '${{ inputs.arch }}' \
-            '${{ env.AWSKMS_OPENSSL_FLOOR }}'
+          "$CI_IMAGE" ./scripts/ci-alpine.sh build \
+            "$CI_BACKEND" "$CI_ARCH" \
+            "$AWSKMS_OPENSSL_FLOOR"
 
     - name: upload experimental archive dry-run
       if: inputs.phase == 'build' && inputs.backend == 'aws'
@@ -89,9 +93,14 @@ runs:
     - name: capability probe and tests in pinned Alpine 3.22.5
       if: inputs.phase == 'test'
       shell: bash
+      env:
+        CI_IMAGE: ${{ inputs.image }}
+        CI_BACKEND: ${{ inputs.backend }}
+        CI_ARCH: ${{ inputs.arch }}
+        CI_NODE_VERSION: ${{ inputs.node-version }}
       run: |
         docker run --rm -v "$PWD:/src" -w /src \
           -e AWSKMS_HOST_UID="$(id -u)" -e AWSKMS_HOST_GID="$(id -g)" \
-          '${{ inputs.image }}' ./scripts/ci-alpine.sh test \
-            '${{ inputs.backend }}' '${{ inputs.arch }}' \
-            '${{ inputs.node-version }}'
+          "$CI_IMAGE" ./scripts/ci-alpine.sh test \
+            "$CI_BACKEND" "$CI_ARCH" \
+            "$CI_NODE_VERSION"

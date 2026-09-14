@@ -75,14 +75,16 @@ runs:
     - name: configure, build, and verify
       if: inputs.phase == 'build'
       shell: bash
+      env:
+        CI_BACKEND: ${{ inputs.backend }}
       run: |
         set -euo pipefail
         prefix="$HOME/.cache/awskms-openssl/$AWSKMS_OPENSSL_FLOOR"
         set -- cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-          -DAWSKMS_BACKEND='${{ inputs.backend }}' \
+          -DAWSKMS_BACKEND="$CI_BACKEND" \
           -DOPENSSL_ROOT_DIR="$prefix" -DCMAKE_PREFIX_PATH="$prefix" \
           -DCMAKE_OSX_DEPLOYMENT_TARGET="$AWSKMS_MACOS_FLOOR"
-        if [[ '${{ inputs.backend }}' == aws ]]; then
+        if [[ "$CI_BACKEND" == aws ]]; then
           export CCACHE_DIR="$PWD/build/.ccache"
           export CCACHE_COMPILERCHECK=content
           export CCACHE_COMPRESS=1
@@ -95,7 +97,7 @@ runs:
         fi
         "$@"
         cmake --build build --parallel
-        if [[ '${{ inputs.backend }}' == aws ]]; then ccache --show-stats; fi
+        if [[ "$CI_BACKEND" == aws ]]; then ccache --show-stats; fi
         ctest --test-dir build -R '^unit$' --no-tests=error --output-on-failure
         scripts/check-symbol-floor.sh build/aws-kms.dylib "$prefix"
         scripts/check-binary-compat.sh macos build/aws-kms.dylib \
@@ -161,8 +163,9 @@ runs:
 
     - name: record mandatory-capable Node
       if: inputs.phase == 'test'
+      id: floor-node
       shell: bash
-      run: echo "AWSKMS_FLOOR_NODE=$(command -v node)" >> "$GITHUB_ENV"
+      run: echo "path=$(command -v node)" >> "$GITHUB_OUTPUT"
 
     - if: inputs.phase == 'test'
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -171,11 +174,9 @@ runs:
 
     - name: select OpenSSL CLI
       if: inputs.phase == 'test'
+      id: openssl
       shell: bash
-      run: |
-        prefix="$(brew --prefix openssl@3)"
-        echo "AWSKMS_OPENSSL=$prefix/bin/openssl" >> "$GITHUB_ENV"
-        echo "$prefix/bin" >> "$GITHUB_PATH"
+      run: echo "prefix=$(brew --prefix openssl@3)" >> "$GITHUB_OUTPUT"
 
     - name: download module for tests
       if: inputs.phase == 'test'
@@ -195,8 +196,12 @@ runs:
     - name: load and probe capability
       if: inputs.phase == 'test'
       shell: bash
+      env:
+        AWSKMS_FLOOR_NODE: ${{ steps.floor-node.outputs.path }}
+        AWSKMS_OPENSSL: ${{ steps.openssl.outputs.prefix }}/bin/openssl
       run: |
         set -euo pipefail
+        export PATH="$(dirname "$AWSKMS_OPENSSL"):$PATH"
         scripts/check-load.sh build "$AWSKMS_FLOOR_NODE" "$(command -v node)"
         set +e
         node -e 'const {createPrivateKey}=require("node:crypto");try{createPrivateKey({key:new URL("aws-kms:")});process.exit(0)}catch(e){process.exit(e.code==="ERR_INVALID_ARG_TYPE"?2:0)}'
@@ -210,8 +215,12 @@ runs:
     - name: full provider and package suites
       if: inputs.phase == 'test'
       shell: bash
+      env:
+        CI_BACKEND: ${{ inputs.backend }}
+        AWSKMS_OPENSSL: ${{ steps.openssl.outputs.prefix }}/bin/openssl
       run: |
         set -euo pipefail
+        export PATH="$(dirname "$AWSKMS_OPENSSL"):$PATH"
         module="$PWD/build/aws-kms.dylib"
         AWSKMS_MODULE="$module" node \
           --openssl-config="$PWD/build/awskms.relocatable.cnf" scripts/check.mjs
@@ -220,4 +229,4 @@ runs:
         ! grep -q 'Skipping the end-to-end suites' /tmp/suite.log
         grep -qE ' pass [1-9][0-9]*$' /tmp/suite.log
         grep -F '✔ explicit provider unload leaves the host process usable' /tmp/suite.log
-        if [ '${{ inputs.backend }}' = aws ]; then scripts/npm-pack.sh build; fi
+        if [ "$CI_BACKEND" = aws ]; then scripts/npm-pack.sh build; fi

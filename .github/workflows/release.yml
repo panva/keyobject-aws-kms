@@ -12,21 +12,24 @@ concurrency:
 
 jobs:
   preflight:
+    name: Verify release prerequisites
     if: github.repository == 'panva/keyobject-aws-kms'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
-      discussions: read
+      discussions: read # Require the Releases discussion category.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: true # Required for remote tag verification.
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - name: Verify the remote tag and changelog
-        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
+        uses: panva/.github/.github/actions/npm-release@3faba8af3880247be43547787aedd52780c9f946
         with:
           operation: preflight
           manifest_directory: npm/core
@@ -44,27 +47,31 @@ jobs:
     needs: preflight
     permissions:
       contents: read
-      id-token: write
-    uses: ./.github/workflows/ci.yml
+      id-token: write # Let called CI assume the real-KMS test roles.
+    uses: $/.github/workflows/ci.yml
     with:
       real_kms: true
       full_matrix: true
 
   assemble:
+    name: Assemble and attest release payload
     needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      actions: read
+      actions: read # Retrieve the payload from a prior run attempt.
       contents: read
-      id-token: write
-      attestations: write
-      artifact-metadata: write
+      id-token: write # Obtain the OIDC identity for Sigstore signing.
+      attestations: write # Store the release attestations.
+      artifact-metadata: write # Associate attestations with the release artifacts.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - name: Find a payload from a prior run attempt
         id: prior
         env:
@@ -152,16 +159,18 @@ jobs:
           - '@keyobject/aws-kms-linuxmusl-arm64'
           - '@keyobject/aws-kms-linuxmusl-x64'
     permissions:
-      actions: read
+      actions: read # Download the tested release payload.
       contents: read
-      id-token: write
+      id-token: write # Stage packages through npm trusted publishing.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
+          package-manager-cache: false
           registry-url: https://registry.npmjs.org
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -180,7 +189,7 @@ jobs:
       - name: Stage the exact package artifact
         id: stage
         continue-on-error: true
-        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
+        uses: panva/.github/.github/actions/npm-release@3faba8af3880247be43547787aedd52780c9f946
         with:
           operation: stage
           tarball: ${{ steps.package.outputs.tarball }}
@@ -194,25 +203,28 @@ jobs:
           exit 1
 
   wait-npm:
+    name: Wait for npm approvals
     needs: stage-npm
     runs-on: ubuntu-latest
     timeout-minutes: 65
     permissions:
-      actions: read
+      actions: read # Download the payload used to verify published packages.
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: true # Required for remote tag verification.
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-payload
           path: ${{ runner.temp }}/release
       - name: Recheck the remote release tag
-        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
+        uses: panva/.github/.github/actions/npm-release@3faba8af3880247be43547787aedd52780c9f946
         with:
           operation: verify-tag
           manifest_directory: npm/core
@@ -227,43 +239,48 @@ jobs:
         run: node scripts/release-lifecycle.mjs wait-npm --payload "$RUNNER_TEMP/release"
 
   integrate:
+    name: Integrate release branches
     needs: wait-npm
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write # Push the release commit to main and the maintenance branch.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: true # Required for remote tag verification and branch pushes.
           fetch-depth: 0
       - name: Integrate the release commit
-        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
+        uses: panva/.github/.github/actions/npm-release@3faba8af3880247be43547787aedd52780c9f946
         with:
           operation: integrate
           manifest_directory: npm/core
           maintenance_branch: true
 
   github-release:
+    name: Publish GitHub Release
     needs: integrate
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      actions: read
-      contents: write
-      discussions: write
+      actions: read # Download the exact release payload.
+      contents: write # Create and publish the release and its assets.
+      discussions: write # Create the release discussion.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: true # Required for remote tag verification.
           fetch-depth: 0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
+          package-manager-cache: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-payload
           path: ${{ runner.temp }}/release
       - name: Recheck the remote release tag
-        uses: panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
+        uses: panva/.github/.github/actions/npm-release@3faba8af3880247be43547787aedd52780c9f946
         with:
           operation: verify-tag
           manifest_directory: npm/core

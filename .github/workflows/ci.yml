@@ -56,7 +56,7 @@ jobs:
   node-versions:
     name: resolve Node versions from 26 onward
     needs: gate
-    uses: panva/.github/.github/workflows/node-versions.yml@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58
+    uses: panva/.github/.github/workflows/node-versions.yml@3faba8af3880247be43547787aedd52780c9f946
     with:
       min: 26
 
@@ -67,7 +67,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-glibc
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-glibc
         with:
           phase: build
           arch: x64
@@ -80,7 +82,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-glibc
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-glibc
         with:
           phase: build
           arch: x64
@@ -93,7 +97,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-glibc
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-glibc
         with:
           phase: build
           arch: arm64
@@ -106,7 +112,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-glibc
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-glibc
         with:
           phase: build
           arch: arm64
@@ -119,7 +127,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-macos
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-macos
         with:
           phase: build
           backend: stub
@@ -130,7 +140,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-macos
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-macos
         with:
           phase: build
           backend: aws
@@ -142,6 +154,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
@@ -163,7 +177,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-glibc
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-glibc
         with:
           phase: test
           arch: x64
@@ -181,7 +197,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-glibc
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-glibc
         with:
           phase: test
           arch: x64
@@ -199,7 +217,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-glibc
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-glibc
         with:
           phase: test
           arch: arm64
@@ -217,7 +237,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-glibc
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-glibc
         with:
           phase: test
           arch: arm64
@@ -235,7 +257,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-macos
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-macos
         with:
           phase: test
           backend: stub
@@ -251,7 +275,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-macos
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-macos
         with:
           phase: test
           backend: aws
@@ -263,6 +289,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ossl-glibc/${{ env.AWSKMS_OPENSSL_FLOOR }}
@@ -286,6 +314,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .ossl-glibc/${{ env.AWSKMS_OPENSSL_FLOOR }}
@@ -305,7 +335,9 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-musl
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-musl
         with:
           phase: build
           arch: x64
@@ -319,7 +351,9 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-musl
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-musl
         with:
           phase: build
           arch: x64
@@ -333,7 +367,9 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-musl
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-musl
         with:
           phase: build
           arch: arm64
@@ -347,7 +383,9 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-musl
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-musl
         with:
           phase: build
           arch: arm64
@@ -366,7 +404,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-musl
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-musl
         with:
           phase: test
           arch: x64
@@ -386,7 +426,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-musl
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-musl
         with:
           phase: test
           arch: x64
@@ -406,7 +448,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-musl
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-musl
         with:
           phase: test
           arch: arm64
@@ -426,7 +470,9 @@ jobs:
         node-version: ${{ fromJSON(needs.node-versions.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-musl
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-musl
         with:
           phase: test
           arch: arm64
@@ -439,18 +485,22 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      OPENSSL_VERSION: ${{ matrix.version }}
     strategy:
       fail-fast: false
       matrix:
         version: ['3.0.21', '3.5.7', '4.0.1']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/awskms-openssl/${{ matrix.version }}
           key: openssl-${{ runner.os }}-${{ runner.arch }}-${{ matrix.version }}
-      - run: scripts/build-openssl.sh '${{ matrix.version }}'
-      - run: scripts/check-openssl-matrix.sh "$HOME/.cache/awskms-openssl/${{ matrix.version }}/include"
+      - run: scripts/build-openssl.sh "$OPENSSL_VERSION"
+      - run: scripts/check-openssl-matrix.sh "$HOME/.cache/awskms-openssl/$OPENSSL_VERSION/include"
 
   openssl-runtime-stub:
     name: OpenSSL ${{ matrix.version }} load and register / stub
@@ -463,7 +513,9 @@ jobs:
         version: ['3.0.21', '3.5.7', '4.0.1']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-openssl-runtime
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-openssl-runtime
         with:
           version: ${{ matrix.version }}
           backend: stub
@@ -479,7 +531,9 @@ jobs:
         version: ['3.0.21', '3.5.7', '4.0.1']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/ci-openssl-runtime
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/ci-openssl-runtime
         with:
           version: ${{ matrix.version }}
           backend: aws
@@ -491,6 +545,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
@@ -617,13 +673,15 @@ jobs:
       group: awskms-real-kms
       cancel-in-progress: false
     permissions:
-      id-token: write
+      id-token: write # Assume the AWS roles that create and exercise test keys.
       contents: read
     env:
       AWS_REGION: ${{ vars.AWSKMS_TEST_REGION }}
       SUBSET: ${{ !inputs.full_matrix && '--smoke' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .node-version
@@ -766,6 +824,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: clang-format
         run: |
           python3 -m venv /tmp/cf

@@ -641,13 +641,13 @@ for family in glibc macos musl-experimental; do
       consumer_job=$(extract_yaml_job "$consumer" "$workflow")
       [[ -n $producer_job ]] || fail "missing exact CI producer $producer"
       [[ -n $consumer_job ]] || fail "missing exact CI consumer $consumer"
-      grep -Fq "uses: ./.github/actions/$action" <<<"$producer_job" ||
+      grep -Fq "uses: $/.github/actions/$action" <<<"$producer_job" ||
         fail "$producer does not use $action"
       grep -Fq '          phase: build' <<<"$producer_job" ||
         fail "$producer does not select the build phase"
       grep -Fq "          backend: $backend" <<<"$producer_job" ||
         fail "$producer has the wrong backend input"
-      grep -Fq "uses: ./.github/actions/$action" <<<"$consumer_job" ||
+      grep -Fq "uses: $/.github/actions/$action" <<<"$consumer_job" ||
         fail "$consumer does not use $action"
       grep -Fq '          phase: test' <<<"$consumer_job" ||
         fail "$consumer does not select the test phase"
@@ -703,7 +703,7 @@ for backend in stub aws; do
   runtime_job=$(extract_yaml_job "openssl-runtime-$backend" "$workflow")
   grep -Fq "needs: build-glibc-x64-$backend" <<<"$runtime_job" ||
     fail "OpenSSL $backend runtime does not wait on its exact producer"
-  grep -Fq 'uses: ./.github/actions/ci-openssl-runtime' <<<"$runtime_job" ||
+  grep -Fq 'uses: $/.github/actions/ci-openssl-runtime' <<<"$runtime_job" ||
     fail "OpenSSL $backend runtime does not use the runtime action"
   grep -Fq '          version: ${{ matrix.version }}' <<<"$runtime_job" ||
     fail "OpenSSL $backend runtime does not pass its version"
@@ -886,8 +886,9 @@ assert_release_permissions() {
   [[ -n $block ]] || fail "release workflow job is missing: $job"
   actual=$(awk '
     /^    permissions:$/ { permissions = 1; next }
-    permissions && /^      [[:alnum:]-]+: (read|write)$/ {
+    permissions && /^      [[:alnum:]-]+: (read|write)([[:space:]]+#.*)?$/ {
       sub(/^      /, "")
+      sub(/[[:space:]]+#.*/, "")
       print
       next
     }
@@ -927,7 +928,7 @@ grep -Fq 'group: release' "$release_workflow" ||
   fail 'release workflow is not serialized'
 grep -Fq 'cancel-in-progress: false' "$release_workflow" ||
   fail 'an active release must never be cancelled by a later tag'
-grep -Fq 'uses: ./.github/workflows/ci.yml' "$release_workflow" ||
+grep -Fq 'uses: $/.github/workflows/ci.yml' "$release_workflow" ||
   fail 'release workflow does not call the authoritative CI workflow'
 grep -Fq '      real_kms: true' "$release_workflow" ||
   fail 'release workflow does not require real AWS KMS coverage'
@@ -937,7 +938,7 @@ grep -Fq '/tmp/cf/bin/pip install -q --require-hashes' "$workflow" ||
   fail 'CI does not require hashes for clang-format'
 grep -Fq '.github/tools/clang-format/requirements.txt' "$workflow" ||
   fail 'CI does not install clang-format from its locked requirements'
-shared_release_action='panva/.github/.github/actions/npm-release@bd045b0d7d15f7827910cdedd3e7f0570bc5bf58'
+shared_release_action='panva/.github/.github/actions/npm-release@3faba8af3880247be43547787aedd52780c9f946'
 [[ $(grep -Fc "uses: $shared_release_action" "$release_workflow") -eq 5 ]] ||
   fail 'release workflow must pin every shared release action invocation'
 if grep -Eq 'repository: panva/\.github|node_modules/\.panva-release' \

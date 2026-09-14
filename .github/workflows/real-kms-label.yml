@@ -31,6 +31,10 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
   disarm:
     name: remove the real-kms label
@@ -52,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      pull-requests: write
+      pull-requests: write # Remove the real-kms label after it is applied.
     steps:
       # No checkout: this touches the API only. `gh` is preinstalled on the
       # runner image.
