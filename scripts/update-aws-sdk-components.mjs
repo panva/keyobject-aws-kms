@@ -28,9 +28,11 @@ const sdkLegalFiles = new Map([
   ['NOTICE.txt', '66bbe1f2efa5f06838ef6d68a4644c858a8f92fa'],
 ]);
 const sdkReviewedFiles = new Map([
+  // SDK 1.11.904 sizes the print buffer for integer literals; the embedded
+  // cJSON version and MIT license still match the bundled component payload.
   [
     'src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp',
-    'f4a4169239cfc6f911de2c55b2d75767cbaf3dbe',
+    '81a9ba1236e8b2466e28f3146c11fbc47f9df44b',
   ],
   [
     'src/aws-cpp-sdk-core/include/aws/core/external/cjson/cJSON.h',

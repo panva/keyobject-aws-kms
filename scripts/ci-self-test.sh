@@ -233,7 +233,7 @@ const responses = {
   }),
   'repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp?ref=1.11.874': reviewedFile(
     'src/aws-cpp-sdk-core/source/external/cjson/cJSON.cpp',
-    'f4a4169239cfc6f911de2c55b2d75767cbaf3dbe',
+    '81a9ba1236e8b2466e28f3146c11fbc47f9df44b',
   ),
   'repos/aws/aws-sdk-cpp/contents/src/aws-cpp-sdk-core/include/aws/core/external/cjson/cJSON.h?ref=1.11.874': reviewedFile(
     'src/aws-cpp-sdk-core/include/aws/core/external/cjson/cJSON.h',
