@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "awsSdkTag": "1.11.883",
+  "awsSdkTag": "1.11.904",
   "components": [
     {
       "name": "ada",
@@ -12,7 +12,7 @@
     },
     {
       "name": "aws-cpp-sdk-core",
-      "version": "1.11.883",
+      "version": "1.11.904",
       "license": "Apache-2.0.txt",
       "licenseExpression": "Apache-2.0",
       "notice": "AWS-NOTICES.txt",
@@ -20,7 +20,7 @@
     },
     {
       "name": "aws-cpp-sdk-kms",
-      "version": "1.11.883",
+      "version": "1.11.904",
       "license": "Apache-2.0.txt",
       "licenseExpression": "Apache-2.0",
       "notice": "AWS-NOTICES.txt",
@@ -44,7 +44,7 @@
     },
     {
       "name": "aws-crt-cpp",
-      "commit": "851d8d003c9d5150edab56807e2393013f3771de",
+      "commit": "8adb7b87f18654ba2147667d2b43a017c7a3c957",
       "license": "Apache-2.0.txt",
       "licenseExpression": "Apache-2.0",
       "notice": "AWS-NOTICES.txt",
@@ -76,7 +76,7 @@
     },
     {
       "name": "aws-c-common",
-      "commit": "3c69b871dfa1815231802febf1bb6899f84cccdb",
+      "commit": "f7d471b1feaea9a310851672580f9ac7e031cfc0",
       "license": "Apache-2.0.txt",
       "licenseExpression": "Apache-2.0",
       "notice": "AWS-NOTICES.txt",
@@ -116,7 +116,7 @@
     },
     {
       "name": "aws-c-io",
-      "commit": "e2946c99521fa12d285c9a0829c92b1bf713922b",
+      "commit": "28e4eb351a536daf1627bf69279e50671f7729b5",
       "license": "Apache-2.0.txt",
       "licenseExpression": "Apache-2.0",
       "notice": "AWS-NOTICES.txt",
@@ -124,7 +124,7 @@
     },
     {
       "name": "aws-c-mqtt",
-      "commit": "2ef9605ec9c50bea3f921e08022ddd57eed70901",
+      "commit": "e35b9ca3f9fcbf1a972c831c5e79046ce56959d1",
       "license": "Apache-2.0.txt",
       "licenseExpression": "Apache-2.0",
       "notice": "AWS-NOTICES.txt",
@@ -132,7 +132,7 @@
     },
     {
       "name": "aws-c-s3",
-      "commit": "a852faa2df3ab2b31fb4cfd64fd3379a2f4ae22e",
+      "commit": "226c3e6937e3d5f7db9e10651f7bd20575e98187",
       "license": "Apache-2.0.txt",
       "licenseExpression": "Apache-2.0",
       "notice": "AWS-NOTICES.txt",
@@ -164,7 +164,7 @@
     },
     {
       "name": "s2n-tls",
-      "commit": "66b1c94d1dfc99b237427cbde230eca63bb8b89c",
+      "commit": "853d1943bbbd7f782a159e77830cdaaf520d68ed",
       "license": "Apache-2.0.txt",
       "licenseExpression": "Apache-2.0",
       "notice": "AWS-NOTICES.txt",
