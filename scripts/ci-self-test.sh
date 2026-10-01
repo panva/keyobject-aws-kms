@@ -48,8 +48,9 @@ cp "$repo/scripts/bump-deps.sh" \
 cp "$repo/third_party/components.json" "$bump_fixture/third_party/"
 cp -R "$repo/third_party/licenses" "$bump_fixture/third_party/"
 # Keep this transition fixture independent of the repository's current pin.
-# In particular, every component that moved must look stale so its reviewed
-# legal-file inventory is exercised even after the real bump is merged.
+# Pin every git component to this fixture's baseline. Components that moved
+# must look stale to exercise their legal-file inventory; unchanged components
+# must match the mocked graph so a later SDK bump cannot trigger extra requests.
 node - "$bump_fixture/third_party/components.json" <<'EOF'
 const fs = require('node:fs');
 
@@ -65,12 +66,19 @@ for (const name of [
 }
 const commits = new Map([
   ['aws-crt-cpp', '72f84bc327462f405c4994228fffe1eeb16cca72'],
+  ['aws-c-auth', '4b5d524bf1a511b05e0fffe5bdc51800770b9427'],
   ['aws-c-cal', '9edd8eac2b21ca6a04535b91d60d361c2f1bb60f'],
+  ['apple-commoncrypto-spi', '9edd8eac2b21ca6a04535b91d60d361c2f1bb60f'],
   ['aws-c-common', '1111111111111111111111111111111111111111'],
+  ['aws-c-compression', 'd8264e64f698341eb03039b96b4f44702a9b3f83'],
+  ['aws-c-event-stream', '51bef3c44e1058b1689751539170b2e0f589ccdb'],
+  ['aws-c-http', '8aefd899fc3210bfd0e3fd414011a3cb708bf6e4'],
   ['aws-c-io', '54350963b64dfc6c4b0ea623b08aa252aae3d7d7'],
+  ['aws-c-mqtt', '2ef9605ec9c50bea3f921e08022ddd57eed70901'],
   ['aws-c-s3', '1f29ef8871a27dc8b90325418780659bac534d71'],
   ['aws-c-sdkutils', 'cb14fea362c82c995eebd34e2e96590ab4e0ed58'],
   ['aws-checksums', '2222222222222222222222222222222222222222'],
+  ['aws-lc', 'f6acf748df0ea6157d55e640730b38d21a7751cd'],
   ['s2n-tls', 'f5f6c6c2ce2370de1aa3ade6899a7321d1127bb8'],
 ]);
 for (const component of manifest.components) {
